@@ -9,13 +9,19 @@
 
 using CliWrap;
 using CliWrap.Buffered;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Net;
+using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Text;
+using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using TS3AudioBot.Algorithm;
@@ -46,16 +52,17 @@ using TSLib.Full.Book;
 using TSLib.Helper;
 using TSLib.Messages;
 
-namespace TS3AudioBot
-{
-	public static class MainCommands
-	{
+namespace TS3AudioBot{
+	public static class MainCommands{
 		internal static ICommandBag Bag { get; } = new MainCommandsBag();
+		internal static HttpClient Client { get; } = new HttpClient();
 
-		internal class MainCommandsBag : ICommandBag
-		{
-			public IReadOnlyCollection<BotCommand> BagCommands { get; } = CommandManager.GetBotCommands(null, typeof(MainCommands)).ToArray();
-			public IReadOnlyCollection<string> AdditionalRights { get; } = new string[] { RightHighVolume, RightDeleteAllPlaylists };
+		internal class MainCommandsBag : ICommandBag{
+			public IReadOnlyCollection<BotCommand> BagCommands { get; } =
+				CommandManager.GetBotCommands(null, typeof(MainCommands)).ToArray();
+
+			public IReadOnlyCollection<string> AdditionalRights { get; } =
+				new string[]{ RightHighVolume, RightDeleteAllPlaylists };
 		}
 
 		public const string RightHighVolume = "ts3ab.admin.volume";
@@ -70,15 +77,18 @@ namespace TS3AudioBot
 
 		// ReSharper disable UnusedMember.Global
 		[Command("add")]
-		public static async Task CommandAdd(PlayManager playManager, InvokerData invoker, string url, params string[] attributes)
+		public static async Task CommandAdd(PlayManager playManager, InvokerData invoker, string url,
+			params string[] attributes)
 			=> await playManager.Enqueue(invoker, url, meta: PlayManager.ParseAttributes(attributes));
 
 		[Command("add")]
-		public static async Task CommandAdd(PlayManager playManager, InvokerData invoker, IAudioResourceResult rsc, params string[] attributes)
+		public static async Task CommandAdd(PlayManager playManager, InvokerData invoker, IAudioResourceResult rsc,
+			params string[] attributes)
 			=> await playManager.Enqueue(invoker, rsc.AudioResource, meta: PlayManager.ParseAttributes(attributes));
 
 		[Command("alias add")]
-		public static void CommandAliasAdd(CommandManager commandManager, ConfBot confBot, string commandName, string command)
+		public static void CommandAliasAdd(CommandManager commandManager, ConfBot confBot, string commandName,
+			string command)
 		{
 			commandManager.RegisterAlias(commandName, command).UnwrapThrow();
 
@@ -114,15 +124,15 @@ namespace TS3AudioBot
 				throw new MissingContextCommandException(strings.error_no_uid_found, typeof(ClientCall));
 
 			TimeSpan? validSpan = null;
-			try
-			{
+			try{
 				if (validHours != null)
 					validSpan = TimeSpan.FromHours(validHours.Value);
 			}
-			catch (OverflowException oex)
-			{
-				throw new CommandException(strings.error_invalid_token_duration, oex, CommandExceptionReason.CommandError);
+			catch (OverflowException oex){
+				throw new CommandException(strings.error_invalid_token_duration, oex,
+					CommandExceptionReason.CommandError);
 			}
+
 			return tokenManager.GenerateToken(invoker.ClientUid.Value!, validSpan);
 		}
 
@@ -145,10 +155,12 @@ namespace TS3AudioBot
 		public static Task CommandBotBadges(Ts3Client ts3Client, string badges) => ts3Client.ChangeBadges(badges);
 
 		[Command("bot description set")]
-		public static Task CommandBotDescriptionSet(Ts3Client ts3Client, string description) => ts3Client.ChangeDescription(description);
+		public static Task CommandBotDescriptionSet(Ts3Client ts3Client, string description) =>
+			ts3Client.ChangeDescription(description);
 
 		[Command("bot diagnose", "_undocumented")]
-		public static async Task<JsonArray<SelfDiagnoseMessage>> CommandBotDiagnose(Player player, IVoiceTarget target, Connection book, ConfRoot rootConf, WebServer webServer)
+		public static async Task<JsonArray<SelfDiagnoseMessage>> CommandBotDiagnose(Player player, IVoiceTarget target,
+			Connection book, ConfRoot rootConf, WebServer webServer)
 		{
 			var problems = new List<SelfDiagnoseMessage>();
 			// ** Diagnose common playback problems and more **
@@ -158,7 +170,8 @@ namespace TS3AudioBot
 
 			// Check talk power
 			if (self != null && curChan != null && !self.TalkPowerGranted && self.TalkPower < curChan.NeededTalkPower)
-				problems.Add(new SelfDiagnoseMessage("The bot does not have enough talk power.", "play", SelfDiagnoseLevel.Warning));
+				problems.Add(new SelfDiagnoseMessage("The bot does not have enough talk power.", "play",
+					SelfDiagnoseLevel.Warning));
 
 			// Check volume 0
 			if (player.Volume == 0)
@@ -166,31 +179,34 @@ namespace TS3AudioBot
 
 			// Check if send mode hasn't been selected yet
 			if (target.SendMode == TargetSendMode.None)
-				problems.Add(new SelfDiagnoseMessage("Send mode is currently 'None', use '!whisper off' for example to send via voice.", "play", SelfDiagnoseLevel.Warning));
+				problems.Add(new SelfDiagnoseMessage(
+					"Send mode is currently 'None', use '!whisper off' for example to send via voice.", "play",
+					SelfDiagnoseLevel.Warning));
 
 			// - Check if ffmpeg exists
 			// - Check ffmpeg https support (https://gitter.im/TS3AudioBot/Lobby?at=5eaf1e14f0377f1631656b7a)
 			//   Seems like CentOS 7 for e.g. by default has no https
-			try
-			{
+			try{
 				var ffPath = rootConf.Tools.Ffmpeg.Path.Value;
 				var result = await Cli.Wrap(ffPath)
-					.WithArguments(new[] { "-hide_banner", "-protocols" })
+					.WithArguments(new[]{ "-hide_banner", "-protocols" })
 					.ExecuteBufferedAsync();
 				var protos = new HashSet<string>(result.StandardOutput
 					.Split('\n')
 					.Select(x => x.Trim())
 					.SkipWhile(x => x != "Input:").Skip(1)
 					.TakeWhile(x => x != "Output:"));
-				foreach (var wantProto in new[] { "http", "https", "hls" })
-				{
+				foreach (var wantProto in new[]{ "http", "https", "hls" }){
 					if (!protos.Contains(wantProto))
-						problems.Add(new SelfDiagnoseMessage($"Your ffmpeg binary is missing '{wantProto}'. Some streams might not play.", "play", SelfDiagnoseLevel.Warning));
+						problems.Add(new SelfDiagnoseMessage(
+							$"Your ffmpeg binary is missing '{wantProto}'. Some streams might not play.", "play",
+							SelfDiagnoseLevel.Warning));
 				}
 			}
-			catch (Exception ex)
-			{
-				problems.Add(new SelfDiagnoseMessage($"Could not find or run ffmpeg binary. Playback will NOT work. ({ex.Message})", "play", SelfDiagnoseLevel.Error));
+			catch (Exception ex){
+				problems.Add(new SelfDiagnoseMessage(
+					$"Could not find or run ffmpeg binary. Playback will NOT work. ({ex.Message})", "play",
+					SelfDiagnoseLevel.Error));
 			}
 
 			// Check if web path is found
@@ -200,8 +216,11 @@ namespace TS3AudioBot
 
 				var webPath = webServer.FindWebFolder();
 				if (rootConf.Web.Interface.Enabled &&
-					(webPath is null || !Directory.Exists(webPath) || !System.IO.File.Exists(Path.Combine(webPath, "index.html"))))
-					problems.Add(new SelfDiagnoseMessage($"WebInterface is enabled, but the required files are missing.", "web", SelfDiagnoseLevel.Error));
+				    (webPath is null || !Directory.Exists(webPath) ||
+				     !System.IO.File.Exists(Path.Combine(webPath, "index.html"))))
+					problems.Add(new SelfDiagnoseMessage(
+						$"WebInterface is enabled, but the required files are missing.", "web",
+						SelfDiagnoseLevel.Error));
 			}
 
 			return new JsonArray<SelfDiagnoseMessage>(problems, x =>
@@ -222,10 +241,13 @@ namespace TS3AudioBot
 		public static async Task<JsonValue<bool>> CommandBotCommander(Ts3Client ts3Client)
 		{
 			var value = await ts3Client.IsChannelCommander();
-			return new JsonValue<bool>(value, string.Format(strings.info_status_channelcommander, value ? strings.info_on : strings.info_off));
+			return new JsonValue<bool>(value,
+				string.Format(strings.info_status_channelcommander, value ? strings.info_on : strings.info_off));
 		}
+
 		[Command("bot commander on")]
 		public static Task CommandBotCommanderOn(Ts3Client ts3Client) => ts3Client.SetChannelCommander(true);
+
 		[Command("bot commander off")]
 		public static Task CommandBotCommanderOff(Ts3Client ts3Client) => ts3Client.SetChannelCommander(false);
 
@@ -243,7 +265,8 @@ namespace TS3AudioBot
 		{
 			var botInfo = await bots.RunBotTemplate(name);
 			if (!botInfo.Ok)
-				throw new CommandException(strings.error_could_not_create_bot + $" ({botInfo.Error})", CommandExceptionReason.CommandError);
+				throw new CommandException(strings.error_could_not_create_bot + $" ({botInfo.Error})",
+					CommandExceptionReason.CommandError);
 			return botInfo.Value;
 		}
 
@@ -256,7 +279,8 @@ namespace TS3AudioBot
 				botConf.Connect.ServerPassword.Password.Value = password;
 			var botInfo = await bots.RunBot(botConf);
 			if (!botInfo.Ok)
-				throw new CommandException(strings.error_could_not_create_bot + $" ({botInfo.Error})", CommandExceptionReason.CommandError);
+				throw new CommandException(strings.error_could_not_create_bot + $" ({botInfo.Error})",
+					CommandExceptionReason.CommandError);
 			return botInfo.Value;
 		}
 
@@ -282,20 +306,21 @@ namespace TS3AudioBot
 			var botInfoList = bots.GetBotInfolist();
 			var botConfigList = config.GetAllBots() ?? Array.Empty<ConfBot>();
 			var infoList = new Dictionary<string, BotInfo>();
-			foreach (var botInfo in botInfoList)
-			{
+			foreach (var botInfo in botInfoList){
 				if (string.IsNullOrEmpty(botInfo.Name))
 					continue;
 				infoList[botInfo.Name] = botInfo;
 			}
-			foreach (var botConfig in botConfigList)
-			{
+
+			foreach (var botConfig in botConfigList){
 				var name = botConfig.Name;
 				if (name is null || infoList.ContainsKey(name))
 					continue;
 				infoList[name] = GetOfflineBotInfo(botConfig);
 			}
-			return new JsonArray<BotInfo>(infoList.Values.Concat(botInfoList.Where(x => string.IsNullOrEmpty(x.Name))).ToArray(),
+
+			return new JsonArray<BotInfo>(
+				infoList.Values.Concat(botInfoList.Where(x => string.IsNullOrEmpty(x.Name))).ToArray(),
 				bl => string.Join("\n", bl.Select(x => x.ToString())));
 		}
 
@@ -310,8 +335,7 @@ namespace TS3AudioBot
 
 		private static BotInfo GetOfflineBotInfo(ConfBot botConfig)
 		{
-			return new BotInfo
-			{
+			return new BotInfo{
 				Id = null,
 				Name = botConfig.Name,
 				Server = botConfig.Connect.Address,
@@ -320,7 +344,8 @@ namespace TS3AudioBot
 		}
 
 		[Command("bot move")]
-		public static Task CommandBotMove(Ts3Client ts3Client, ulong channel, string? password = null) => ts3Client.MoveTo((ChannelId)channel, password);
+		public static Task CommandBotMove(Ts3Client ts3Client, ulong channel, string? password = null) =>
+			ts3Client.MoveTo((ChannelId)channel, password);
 
 		[Command("bot name")]
 		public static Task CommandBotName(Ts3Client ts3Client, string name) => ts3Client.ChangeName(name);
@@ -335,14 +360,16 @@ namespace TS3AudioBot
 		}
 
 		[Command("bot template", "cmd_bot_use_help")]
-		public static async Task<object?> CommandBotTemplate(ExecutionInformation info, BotManager bots, string botName, ICommand cmd)
+		public static async Task<object?> CommandBotTemplate(ExecutionInformation info, BotManager bots, string botName,
+			ICommand cmd)
 		{
 			var bot = bots.GetBotLock(botName);
 			return await CommandBotUseInternal(info, bot, cmd);
 		}
 
 		[Command("bot use")]
-		public static async Task<object?> CommandBotUse(ExecutionInformation info, BotManager bots, int botId, ICommand cmd)
+		public static async Task<object?> CommandBotUse(ExecutionInformation info, BotManager bots, int botId,
+			ICommand cmd)
 		{
 			var bot = bots.GetBotLock(botId);
 			return await CommandBotUseInternal(info, bot, cmd);
@@ -355,12 +382,10 @@ namespace TS3AudioBot
 
 			var backParent = info.ParentInjector;
 			info.ParentInjector = bot.Injector;
-			try
-			{
+			try{
 				return await bot.Scheduler.InvokeAsync(() => cmd.Execute(info, Array.Empty<ICommand>()).AsTask());
 			}
-			finally
-			{
+			finally{
 				info.ParentInjector = backParent;
 			}
 		}
@@ -406,11 +431,11 @@ namespace TS3AudioBot
 		{
 			// Evaluate the first argument on the rest of the arguments
 			if (arguments.Count == 0)
-				throw new CommandException(strings.error_cmd_at_least_one_argument, CommandExceptionReason.MissingParameter);
+				throw new CommandException(strings.error_cmd_at_least_one_argument,
+					CommandExceptionReason.MissingParameter);
 			var leftArguments = arguments.TrySegment(1);
 			var arg0 = await arguments[0].Execute(info, Array.Empty<ICommand>());
-			switch (arg0)
-			{
+			switch (arg0){
 			case ICommand command:
 				return await command.Execute(info, leftArguments);
 			case null:
@@ -424,67 +449,95 @@ namespace TS3AudioBot
 		}
 
 		[Command("from", "_undocumented")]
-		public static async Task CommandFrom(PlayManager playManager, InvokerData invoker, string factoryName, string url)
+		public static async Task CommandFrom(PlayManager playManager, InvokerData invoker, string factoryName,
+			string url)
 			=> await playManager.Play(invoker, url, factoryName);
 
 		[Command("get", "_undocumented")]
 		[Usage("<index> <list...>", "Get an element out of a list")]
 		public static object? CommandGet(uint index, System.Collections.IEnumerable list)
 		{
-			foreach (var i in list)
-			{
+			foreach (var i in list){
 				if (index == 0)
 					return i;
 				index--;
 			}
+
 			return null;
 		}
 
 		[Command("getmy id")]
 		public static ushort CommandGetId(ClientCall invoker)
-			=> invoker.ClientId?.Value ?? throw new CommandException(strings.error_not_found, CommandExceptionReason.CommandError);
+			=> invoker.ClientId?.Value ??
+			   throw new CommandException(strings.error_not_found, CommandExceptionReason.CommandError);
+
 		[Command("getmy uid")]
 		public static string? CommandGetUid(ClientCall invoker)
 			=> invoker.ClientUid.Value;
+
 		[Command("getmy name")]
 		public static string CommandGetName(ClientCall invoker)
-			=> invoker.NickName ?? throw new CommandException(strings.error_not_found, CommandExceptionReason.CommandError);
+			=> invoker.NickName ??
+			   throw new CommandException(strings.error_not_found, CommandExceptionReason.CommandError);
+
 		[Command("getmy dbid")]
 		public static ulong CommandGetDbId(ClientCall invoker)
-			=> invoker.DatabaseId?.Value ?? throw new CommandException(strings.error_not_found, CommandExceptionReason.CommandError);
+			=> invoker.DatabaseId?.Value ??
+			   throw new CommandException(strings.error_not_found, CommandExceptionReason.CommandError);
+
 		[Command("getmy channel")]
 		public static ulong CommandGetChannel(ClientCall invoker)
-			=> invoker.ChannelId?.Value ?? throw new CommandException(strings.error_not_found, CommandExceptionReason.CommandError);
+			=> invoker.ChannelId?.Value ??
+			   throw new CommandException(strings.error_not_found, CommandExceptionReason.CommandError);
+
 		[Command("getmy all")]
 		public static JsonValue<ClientCall> CommandGetUser(ClientCall invoker)
-			=> new JsonValue<ClientCall>(invoker, $"Client: Id:{invoker.ClientId} DbId:{invoker.DatabaseId} ChanId:{invoker.ChannelId} Uid:{invoker.ClientUid}"); // LOC: TODO
+			=> new JsonValue<ClientCall>(invoker,
+				$"Client: Id:{invoker.ClientId} DbId:{invoker.DatabaseId} ChanId:{invoker.ChannelId} Uid:{invoker.ClientUid}"); // LOC: TODO
 
 		[Command("getuser uid byid")]
-		public static async Task<string> CommandGetUidById(Ts3Client ts3Client, ushort id) => (await ts3Client.GetFallbackedClientById((ClientId)id)).Uid?.Value ?? "";
+		public static async Task<string> CommandGetUidById(Ts3Client ts3Client, ushort id) =>
+			(await ts3Client.GetFallbackedClientById((ClientId)id)).Uid?.Value ?? "";
+
 		[Command("getuser name byid")]
-		public static async Task<string> CommandGetNameById(Ts3Client ts3Client, ushort id) => (await ts3Client.GetFallbackedClientById((ClientId)id)).Name;
+		public static async Task<string> CommandGetNameById(Ts3Client ts3Client, ushort id) =>
+			(await ts3Client.GetFallbackedClientById((ClientId)id)).Name;
+
 		[Command("getuser dbid byid")]
-		public static async Task<ulong> CommandGetDbIdById(Ts3Client ts3Client, ushort id) => (await ts3Client.GetFallbackedClientById((ClientId)id)).DatabaseId.Value;
+		public static async Task<ulong> CommandGetDbIdById(Ts3Client ts3Client, ushort id) =>
+			(await ts3Client.GetFallbackedClientById((ClientId)id)).DatabaseId.Value;
+
 		[Command("getuser channel byid")]
-		public static async Task<ulong> CommandGetChannelById(Ts3Client ts3Client, ushort id) => (await ts3Client.GetFallbackedClientById((ClientId)id)).ChannelId.Value;
+		public static async Task<ulong> CommandGetChannelById(Ts3Client ts3Client, ushort id) =>
+			(await ts3Client.GetFallbackedClientById((ClientId)id)).ChannelId.Value;
+
 		[Command("getuser all byid")]
 		public static async Task<JsonValue<ClientList>> CommandGetUserById(Ts3Client ts3Client, ushort id)
 		{
 			var client = await ts3Client.GetFallbackedClientById((ClientId)id);
-			return new JsonValue<ClientList>(client, $"Client: Id:{client.ClientId} DbId:{client.DatabaseId} ChanId:{client.ChannelId} Uid:{client.Uid}");
+			return new JsonValue<ClientList>(client,
+				$"Client: Id:{client.ClientId} DbId:{client.DatabaseId} ChanId:{client.ChannelId} Uid:{client.Uid}");
 		}
+
 		[Command("getuser id byname")]
-		public static async Task<ushort> CommandGetIdByName(Ts3Client ts3Client, string username) => (await ts3Client.GetClientByName(username)).ClientId.Value;
+		public static async Task<ushort> CommandGetIdByName(Ts3Client ts3Client, string username) =>
+			(await ts3Client.GetClientByName(username)).ClientId.Value;
+
 		[Command("getuser all byname")]
 		public static async Task<JsonValue<ClientList>> CommandGetUserByName(Ts3Client ts3Client, string username)
 		{
 			var client = await ts3Client.GetClientByName(username);
-			return new JsonValue<ClientList>(client, $"Client: Id:{client.ClientId} DbId:{client.DatabaseId} ChanId:{client.ChannelId} Uid:{client.Uid}");
+			return new JsonValue<ClientList>(client,
+				$"Client: Id:{client.ClientId} DbId:{client.DatabaseId} ChanId:{client.ChannelId} Uid:{client.Uid}");
 		}
+
 		[Command("getuser name bydbid")]
-		public static async Task<string> CommandGetNameByDbId(Ts3Client ts3Client, ulong dbId) => (await ts3Client.GetDbClientByDbId((ClientDbId)dbId)).Name;
+		public static async Task<string> CommandGetNameByDbId(Ts3Client ts3Client, ulong dbId) =>
+			(await ts3Client.GetDbClientByDbId((ClientDbId)dbId)).Name;
+
 		[Command("getuser uid bydbid")]
-		public static async Task<string?> CommandGetUidByDbId(Ts3Client ts3Client, ulong dbId) => (await ts3Client.GetDbClientByDbId((ClientDbId)dbId)).Uid.Value;
+		public static async Task<string?> CommandGetUidByDbId(Ts3Client ts3Client, ulong dbId) =>
+			(await ts3Client.GetDbClientByDbId((ClientDbId)dbId)).Uid.Value;
 
 		private static readonly TextMod HelpCommand = new TextMod(TextModFlag.Bold);
 		private static readonly TextMod HelpCommandParam = new TextMod(TextModFlag.Italic);
@@ -500,7 +553,8 @@ namespace TS3AudioBot
 			tmb.Append("!help history", HelpCommand).AppendLine(" : viewing and accesing the play history");
 			tmb.Append("!help bot", HelpCommand).AppendLine(" : useful features to configure your bot");
 			tmb.Append("!help all", HelpCommand).AppendLine(" : show all commands");
-			tmb.Append("!help command", HelpCommand).Append(" <command path>", HelpCommandParam).AppendLine(" : help text of a specific command");
+			tmb.Append("!help command", HelpCommand).Append(" <command path>", HelpCommandParam)
+				.AppendLine(" : help text of a specific command");
 			var str = tmb.ToString();
 			return str;
 		}
@@ -520,10 +574,10 @@ namespace TS3AudioBot
 		}
 
 		[Command("help command", "_undocumented")]
-		public static JsonObject CommandHelpCommand(CommandManager commandManager, IFilter? filter = null, params string[] command)
+		public static JsonObject CommandHelpCommand(CommandManager commandManager, IFilter? filter = null,
+			params string[] command)
 		{
-			if (command.Length == 0)
-			{
+			if (command.Length == 0){
 				return new JsonEmpty(strings.error_cmd_at_least_one_argument);
 			}
 
@@ -531,39 +585,44 @@ namespace TS3AudioBot
 			ICommand? target = group;
 			filter ??= Filter.DefaultFilter;
 			var realPath = new List<string>();
-			for (int i = 0; i < command.Length; i++)
-			{
+			for (int i = 0; i < command.Length; i++){
 				var possibilities = filter.Filter(group.Commands, command[i]).ToList();
 				if (possibilities.Count <= 0)
-					throw new CommandException(strings.cmd_help_error_no_matching_command, CommandExceptionReason.CommandError);
+					throw new CommandException(strings.cmd_help_error_no_matching_command,
+						CommandExceptionReason.CommandError);
 				if (possibilities.Count > 1)
-					throw new CommandException(string.Format(strings.cmd_help_error_ambiguous_command, string.Join(", ", possibilities.Select(kvp => kvp.Key))), CommandExceptionReason.CommandError);
+					throw new CommandException(
+						string.Format(strings.cmd_help_error_ambiguous_command,
+							string.Join(", ", possibilities.Select(kvp => kvp.Key))),
+						CommandExceptionReason.CommandError);
 
 				realPath.Add(possibilities[0].Key);
 				target = possibilities[0].Value;
 
-				if (i < command.Length - 1)
-				{
+				if (i < command.Length - 1){
 					group = target as CommandGroup;
 					if (group is null)
-						throw new CommandException(string.Format(strings.cmd_help_error_no_further_subfunctions, string.Join(" ", realPath, 0, i)), CommandExceptionReason.CommandError);
+						throw new CommandException(
+							string.Format(strings.cmd_help_error_no_further_subfunctions,
+								string.Join(" ", realPath, 0, i)), CommandExceptionReason.CommandError);
 				}
 			}
 
-			switch (target)
-			{
+			switch (target){
 			case BotCommand targetB:
 				return JsonValue.Create(targetB);
 			case CommandGroup targetCg:
 				var subList = targetCg.Commands.Select(g => g.Key).ToArray();
-				return new JsonArray<string>(subList, string.Format(strings.cmd_help_info_contains_subfunctions, string.Join(", ", subList)));
+				return new JsonArray<string>(subList,
+					string.Format(strings.cmd_help_info_contains_subfunctions, string.Join(", ", subList)));
 			case OverloadedFunctionCommand targetOfc:
 				var strb = new StringBuilder();
 				foreach (var botCom in targetOfc.Functions.OfType<BotCommand>())
 					strb.Append(botCom);
 				return JsonValue.Create(strb.ToString());
 			case AliasCommand targetAlias:
-				return JsonValue.Create(string.Format("'{0}' is an alias for:\n{1}", string.Join(" ", realPath), targetAlias.AliasString));
+				return JsonValue.Create(string.Format("'{0}' is an alias for:\n{1}", string.Join(" ", realPath),
+					targetAlias.AliasString));
 			default:
 				throw new CommandException(strings.cmd_help_error_unknown_error, CommandExceptionReason.CommandError);
 			}
@@ -576,7 +635,8 @@ namespace TS3AudioBot
 		}
 
 		[Command("history add")]
-		public static async Task CommandHistoryQueue(HistoryManager historyManager, PlayManager playManager, InvokerData invoker, uint hid)
+		public static async Task CommandHistoryQueue(HistoryManager historyManager, PlayManager playManager,
+			InvokerData invoker, uint hid)
 		{
 			var ale = historyManager.GetEntryById(hid).UnwrapThrow();
 			await playManager.Enqueue(invoker, ale.AudioResource);
@@ -585,45 +645,48 @@ namespace TS3AudioBot
 		[Command("history clean")]
 		public static JsonEmpty CommandHistoryClean(DbStore database, CallerInfo caller, UserSession? session = null)
 		{
-			if (caller.ApiCall)
-			{
+			if (caller.ApiCall){
 				database.CleanFile();
 				return new JsonEmpty(string.Empty);
 			}
 
 			Task<string?> ResponseHistoryClean(string message)
 			{
-				if (TextUtil.GetAnswer(message) == Answer.Yes)
-				{
+				if (TextUtil.GetAnswer(message) == Answer.Yes){
 					database.CleanFile();
 					return Task.FromResult<string?>(strings.info_cleanup_done);
 				}
+
 				return Task.FromResult<string?>(null);
 			}
+
 			session.SetResponse(ResponseHistoryClean);
-			return new JsonEmpty($"{strings.cmd_history_clean_confirm_clean} {strings.info_bot_might_be_unresponsive} {YesNoOption}");
+			return new JsonEmpty(
+				$"{strings.cmd_history_clean_confirm_clean} {strings.info_bot_might_be_unresponsive} {YesNoOption}");
 		}
 
 		[Command("history clean removedefective")]
-		public static async Task<JsonEmpty> CommandHistoryCleanRemove(HistoryManager historyManager, ResolveContext resourceFactory, CallerInfo caller, UserSession? session = null)
+		public static async Task<JsonEmpty> CommandHistoryCleanRemove(HistoryManager historyManager,
+			ResolveContext resourceFactory, CallerInfo caller, UserSession? session = null)
 		{
-			if (caller.ApiCall)
-			{
+			if (caller.ApiCall){
 				await historyManager.RemoveBrokenLinks(resourceFactory);
 				return new JsonEmpty(string.Empty);
 			}
 
 			async Task<string?> ResponseHistoryCleanRemove(string message)
 			{
-				if (TextUtil.GetAnswer(message) == Answer.Yes)
-				{
+				if (TextUtil.GetAnswer(message) == Answer.Yes){
 					await historyManager.RemoveBrokenLinks(resourceFactory);
 					return strings.info_cleanup_done;
 				}
+
 				return null;
 			}
+
 			session.SetResponse(ResponseHistoryCleanRemove);
-			return new JsonEmpty($"{strings.cmd_history_clean_removedefective_confirm_clean} {strings.info_bot_might_be_unresponsive} {YesNoOption}");
+			return new JsonEmpty(
+				$"{strings.cmd_history_clean_removedefective_confirm_clean} {strings.info_bot_might_be_unresponsive} {YesNoOption}");
 		}
 
 		[Command("history clean upgrade", "_undocumented")]
@@ -633,12 +696,12 @@ namespace TS3AudioBot
 		}
 
 		[Command("history delete")]
-		public static JsonEmpty CommandHistoryDelete(HistoryManager historyManager, CallerInfo caller, uint id, UserSession? session = null)
+		public static JsonEmpty CommandHistoryDelete(HistoryManager historyManager, CallerInfo caller, uint id,
+			UserSession? session = null)
 		{
 			var ale = historyManager.GetEntryById(id).UnwrapThrow();
 
-			if (caller.ApiCall)
-			{
+			if (caller.ApiCall){
 				historyManager.RemoveEntry(ale);
 				return new JsonEmpty(string.Empty);
 			}
@@ -646,10 +709,10 @@ namespace TS3AudioBot
 			Task<string?> ResponseHistoryDelete(string message)
 			{
 				Answer answer = TextUtil.GetAnswer(message);
-				if (answer == Answer.Yes)
-				{
+				if (answer == Answer.Yes){
 					historyManager.RemoveEntry(ale);
 				}
+
 				return Task.FromResult<string?>(null);
 			}
 
@@ -661,9 +724,10 @@ namespace TS3AudioBot
 		}
 
 		[Command("history from")]
-		public static JsonArray<AudioLogEntry> CommandHistoryFrom(HistoryManager historyManager, string userUid, int? amount = null)
+		public static JsonArray<AudioLogEntry> CommandHistoryFrom(HistoryManager historyManager, string userUid,
+			int? amount = null)
 		{
-			var query = new SeachQuery { UserUid = userUid };
+			var query = new SeachQuery{ UserUid = userUid };
 			if (amount != null)
 				query.MaxResults = amount.Value;
 
@@ -682,9 +746,11 @@ namespace TS3AudioBot
 		public static JsonValue<uint> CommandHistoryId(HistoryManager historyManager, string special)
 		{
 			if (special == "last")
-				return new JsonValue<uint>(historyManager.HighestId, string.Format(strings.cmd_history_id_last, historyManager.HighestId));
+				return new JsonValue<uint>(historyManager.HighestId,
+					string.Format(strings.cmd_history_id_last, historyManager.HighestId));
 			else if (special == "next")
-				return new JsonValue<uint>(historyManager.HighestId + 1, string.Format(strings.cmd_history_id_next, historyManager.HighestId + 1));
+				return new JsonValue<uint>(historyManager.HighestId + 1,
+					string.Format(strings.cmd_history_id_next, historyManager.HighestId + 1));
 			else
 				throw new CommandException("Unrecognized name descriptor", CommandExceptionReason.CommandError);
 		}
@@ -692,22 +758,24 @@ namespace TS3AudioBot
 		[Command("history last", "cmd_history_last_int_help")]
 		public static JsonArray<AudioLogEntry> CommandHistoryLast(HistoryManager historyManager, int amount)
 		{
-			var query = new SeachQuery { MaxResults = amount };
+			var query = new SeachQuery{ MaxResults = amount };
 			var results = historyManager.Search(query).ToArray();
 			return new JsonArray<AudioLogEntry>(results, historyManager.Format);
 		}
 
 		[Command("history last", "cmd_history_last_help")]
-		public static async Task CommandHistoryLast(HistoryManager historyManager, PlayManager playManager, InvokerData invoker)
+		public static async Task CommandHistoryLast(HistoryManager historyManager, PlayManager playManager,
+			InvokerData invoker)
 		{
-			var ale = historyManager.Search(new SeachQuery { MaxResults = 1 }).FirstOrDefault();
+			var ale = historyManager.Search(new SeachQuery{ MaxResults = 1 }).FirstOrDefault();
 			if (ale is null)
 				throw new CommandException(strings.cmd_history_last_is_empty, CommandExceptionReason.CommandError);
 			await playManager.Play(invoker, ale.AudioResource);
 		}
 
 		[Command("history play")]
-		public static async Task CommandHistoryPlay(HistoryManager historyManager, PlayManager playManager, InvokerData invoker, uint hid)
+		public static async Task CommandHistoryPlay(HistoryManager historyManager, PlayManager playManager,
+			InvokerData invoker, uint hid)
 		{
 			var ale = historyManager.GetEntryById(hid).UnwrapThrow();
 			await playManager.Play(invoker, ale.AudioResource);
@@ -719,7 +787,8 @@ namespace TS3AudioBot
 			var ale = historyManager.GetEntryById(id).UnwrapThrow();
 
 			if (string.IsNullOrWhiteSpace(newName))
-				throw new CommandException(strings.cmd_history_rename_invalid_name, CommandExceptionReason.CommandError);
+				throw new CommandException(strings.cmd_history_rename_invalid_name,
+					CommandExceptionReason.CommandError);
 
 			historyManager.RenameEntry(ale, newName);
 		}
@@ -727,7 +796,7 @@ namespace TS3AudioBot
 		[Command("history till", "cmd_history_till_DateTime_help")]
 		public static JsonArray<AudioLogEntry> CommandHistoryTill(HistoryManager historyManager, DateTime time)
 		{
-			var query = new SeachQuery { LastInvokedAfter = time };
+			var query = new SeachQuery{ LastInvokedAfter = time };
 			var results = historyManager.Search(query).ToArray();
 			return new JsonArray<AudioLogEntry>(results, historyManager.Format);
 		}
@@ -735,15 +804,15 @@ namespace TS3AudioBot
 		[Command("history till", "cmd_history_till_string_help")]
 		public static JsonArray<AudioLogEntry> CommandHistoryTill(HistoryManager historyManager, string time)
 		{
-			var tillTime = (time.ToLowerInvariant()) switch
-			{
+			var tillTime = (time.ToLowerInvariant()) switch{
 				"hour" => DateTime.Now.AddHours(-1),
 				"today" => DateTime.Today,
 				"yesterday" => DateTime.Today.AddDays(-1),
 				"week" => DateTime.Today.AddDays(-7),
-				_ => throw new CommandException(strings.error_unrecognized_descriptor, CommandExceptionReason.CommandError),
+				_ => throw new CommandException(strings.error_unrecognized_descriptor,
+					CommandExceptionReason.CommandError),
 			};
-			var query = new SeachQuery { LastInvokedAfter = tillTime };
+			var query = new SeachQuery{ LastInvokedAfter = tillTime };
 			var results = historyManager.Search(query).ToArray();
 			return new JsonArray<AudioLogEntry>(results, historyManager.Format);
 		}
@@ -751,18 +820,20 @@ namespace TS3AudioBot
 		[Command("history title")]
 		public static JsonArray<AudioLogEntry> CommandHistoryTitle(HistoryManager historyManager, string part)
 		{
-			var query = new SeachQuery { TitlePart = part };
+			var query = new SeachQuery{ TitlePart = part };
 			var results = historyManager.Search(query).ToArray();
 			return new JsonArray<AudioLogEntry>(results, historyManager.Format);
 		}
 
 		[Command("if")]
-		[Usage("<argument0> <comparator> <argument1> <then>", "Compares the two arguments and returns or executes the then-argument")]
-		[Usage("<argument0> <comparator> <argument1> <then> <else>", "Same as before and return the else-arguments if the condition is false")]
-		public static async Task<object?> CommandIf(ExecutionInformation info, string arg0, string cmp, string arg1, ICommand then, ICommand? other = null)
+		[Usage("<argument0> <comparator> <argument1> <then>",
+			"Compares the two arguments and returns or executes the then-argument")]
+		[Usage("<argument0> <comparator> <argument1> <then> <else>",
+			"Same as before and return the else-arguments if the condition is false")]
+		public static async Task<object?> CommandIf(ExecutionInformation info, string arg0, string cmp, string arg1,
+			ICommand then, ICommand? other = null)
 		{
-			Func<double, double, bool> comparer = cmp switch
-			{
+			Func<double, double, bool> comparer = cmp switch{
 				"<" => (a, b) => a < b,
 				">" => (a, b) => a > b,
 				"<=" => (a, b) => a <= b,
@@ -774,12 +845,10 @@ namespace TS3AudioBot
 			bool cmpResult;
 			// Try to parse arguments into doubles
 			if (double.TryParse(arg0, NumberStyles.Number, CultureInfo.InvariantCulture, out var d0)
-				&& double.TryParse(arg1, NumberStyles.Number, CultureInfo.InvariantCulture, out var d1))
-			{
+			    && double.TryParse(arg1, NumberStyles.Number, CultureInfo.InvariantCulture, out var d1)){
 				cmpResult = comparer(d0, d1);
 			}
-			else
-			{
+			else{
 				cmpResult = comparer(string.CompareOrdinal(arg0, arg1), 0);
 			}
 
@@ -799,32 +868,34 @@ namespace TS3AudioBot
 		private static int GetIndexExpression(PlaylistManager playlistManager, string expression)
 		{
 			int index;
-			if (string.IsNullOrEmpty(expression))
-			{
+			if (string.IsNullOrEmpty(expression)){
 				index = playlistManager.Index;
 			}
-			else if (expression.StartsWith("@"))
-			{
+			else if (expression.StartsWith("@")){
 				var subOffset = expression.AsSpan(1).Trim();
 				if (subOffset.IsEmpty)
 					index = 0;
 				else if (!int.TryParse(subOffset, out index))
-					throw new CommandException(strings.error_unrecognized_descriptor, CommandExceptionReason.CommandError);
+					throw new CommandException(strings.error_unrecognized_descriptor,
+						CommandExceptionReason.CommandError);
 				index += playlistManager.Index;
 			}
-			else if (!int.TryParse(expression, NumberStyles.Integer, CultureInfo.InvariantCulture, out index))
-			{
+			else if (!int.TryParse(expression, NumberStyles.Integer, CultureInfo.InvariantCulture, out index)){
 				throw new CommandException(strings.error_unrecognized_descriptor, CommandExceptionReason.CommandError);
 			}
+
 			return index;
 		}
 
 		[Command("info")]
-		public static JsonValue<QueueInfo> CommandInfo(ResolveContext resourceFactory, PlaylistManager playlistManager, string? offset = null, int? count = null)
-			=> CommandInfo(resourceFactory, playlistManager, GetIndexExpression(playlistManager, offset ?? "@-1"), count);
+		public static JsonValue<QueueInfo> CommandInfo(ResolveContext resourceFactory, PlaylistManager playlistManager,
+			string? offset = null, int? count = null)
+			=> CommandInfo(resourceFactory, playlistManager, GetIndexExpression(playlistManager, offset ?? "@-1"),
+				count);
 
 		[Command("info")]
-		public static JsonValue<QueueInfo> CommandInfo(ResolveContext resourceFactory, PlaylistManager playlistManager, int offset, int? count = null)
+		public static JsonValue<QueueInfo> CommandInfo(ResolveContext resourceFactory, PlaylistManager playlistManager,
+			int offset, int? count = null)
 		{
 			const int maxSongs = 20;
 			var playIndex = playlistManager.Index;
@@ -833,8 +904,7 @@ namespace TS3AudioBot
 			int countV = Tools.Clamp(count ?? 3, 0, Math.Min(maxSongs, plist.Items.Count - offsetV));
 			var items = plist.Items.Skip(offsetV).Take(countV).Select(x => resourceFactory.ToApiFormat(x)).ToArray();
 
-			var plInfo = new QueueInfo(".mix", plist.Title)
-			{
+			var plInfo = new QueueInfo(".mix", plist.Title){
 				SongCount = plist.Items.Count,
 				DisplayOffset = offsetV,
 				Items = items,
@@ -847,10 +917,10 @@ namespace TS3AudioBot
 					return strings.info_currently_not_playing;
 
 				var tmb = new TextModBuilder();
-				tmb.AppendFormat(strings.cmd_list_show_header, x.Title.Mod().Bold(), x.SongCount.ToString()).Append("\n");
+				tmb.AppendFormat(strings.cmd_list_show_header, x.Title.Mod().Bold(), x.SongCount.ToString())
+					.Append("\n");
 
-				for (int i = 0; i < x.Items.Length; i++)
-				{
+				for (int i = 0; i < x.Items.Length; i++){
 					var line = $"{x.DisplayOffset + i}: {x.Items[i].Title}";
 					var plIndex = x.DisplayOffset + i;
 					if (plIndex == x.PlaybackIndex)
@@ -868,17 +938,18 @@ namespace TS3AudioBot
 		}
 
 		[Command("json merge")]
-		public static async Task<JsonArray<object?>> CommandJsonMerge(ExecutionInformation info, ApiCall _, IReadOnlyList<ICommand> arguments)
+		public static async Task<JsonArray<object?>> CommandJsonMerge(ExecutionInformation info, ApiCall _,
+			IReadOnlyList<ICommand> arguments)
 		{
 			if (arguments.Count == 0)
 				return new JsonArray<object?>(Array.Empty<object>(), string.Empty);
 
 			var jsonArr = new object?[arguments.Count];
-			for (int i = 0; i < arguments.Count; i++)
-			{
+			for (int i = 0; i < arguments.Count; i++){
 				object? res;
-				try { res = await arguments[i].Execute(info, Array.Empty<ICommand>()); }
-				catch (AudioBotException) { continue; }
+				try{ res = await arguments[i].Execute(info, Array.Empty<ICommand>()); }
+				catch (AudioBotException){ continue; }
+
 				if (res is JsonObject o)
 					jsonArr[i] = o.GetSerializeObject();
 				else
@@ -897,7 +968,8 @@ namespace TS3AudioBot
 		}
 
 		[Command("jump")]
-		public static async Task CommandJump(PlayManager playManager, PlaylistManager playlistManager, InvokerData invoker, string offset)
+		public static async Task CommandJump(PlayManager playManager, PlaylistManager playlistManager,
+			InvokerData invoker, string offset)
 		{
 			playlistManager.Index = GetIndexExpression(playlistManager, offset);
 			await playManager.Play(invoker);
@@ -916,16 +988,19 @@ namespace TS3AudioBot
 			if (invoker.ClientId is null)
 				return;
 
-			try
-			{
+			try{
 				if (far) await ts3Client.KickClientFromServer(invoker.ClientId.Value);
 				else await ts3Client.KickClientFromChannel(invoker.ClientId.Value);
 			}
-			catch (Exception ex) { throw new CommandException(strings.cmd_kickme_missing_permission, ex, CommandExceptionReason.CommandError); }
+			catch (Exception ex){
+				throw new CommandException(strings.cmd_kickme_missing_permission, ex,
+					CommandExceptionReason.CommandError);
+			}
 		}
 
 		[Command("list add")]
-		public static async Task<JsonValue<PlaylistItemGetData>> CommandListAdd(ResolveContext resourceFactory, PlaylistManager playlistManager, string listId, string link /* TODO param */)
+		public static async Task<JsonValue<PlaylistItemGetData>> CommandListAdd(ResolveContext resourceFactory,
+			PlaylistManager playlistManager, string listId, string link /* TODO param */)
 		{
 			PlaylistItemGetData? getData = null;
 			var playResource = await resourceFactory.Load(link);
@@ -952,10 +1027,10 @@ namespace TS3AudioBot
 		{
 			Task<string?> ResponseListDelete(string message)
 			{
-				if (TextUtil.GetAnswer(message) == Answer.Yes)
-				{
+				if (TextUtil.GetAnswer(message) == Answer.Yes){
 					playlistManager.DeletePlaylist(listId).UnwrapThrow();
 				}
+
 				return Task.FromResult<string?>(null);
 			}
 
@@ -968,20 +1043,23 @@ namespace TS3AudioBot
 			=> playlistManager.DeletePlaylist(listId).UnwrapThrow();
 
 		[Command("list from", "_undocumented")]
-		public static async Task<JsonValue<PlaylistInfo>> PropagiateLoad(PlaylistManager playlistManager, ResolveContext resolver, string resolverName, string listId, string url)
+		public static async Task<JsonValue<PlaylistInfo>> PropagiateLoad(PlaylistManager playlistManager,
+			ResolveContext resolver, string resolverName, string listId, string url)
 		{
 			var getList = await resolver.LoadPlaylistFrom(url, resolverName);
 			return ImportMerge(playlistManager, resolver, getList, listId);
 		}
 
 		[Command("list import", "cmd_list_get_help")] // TODO readjust help texts
-		public static async Task<JsonValue<PlaylistInfo>> CommandListImport(PlaylistManager playlistManager, ResolveContext resolver, string listId, string link)
+		public static async Task<JsonValue<PlaylistInfo>> CommandListImport(PlaylistManager playlistManager,
+			ResolveContext resolver, string listId, string link)
 		{
 			var getList = await resolver.LoadPlaylistFrom(link);
 			return ImportMerge(playlistManager, resolver, getList, listId);
 		}
 
-		private static JsonValue<PlaylistInfo> ImportMerge(PlaylistManager playlistManager, ResolveContext resolver, Playlist addList, string listId)
+		private static JsonValue<PlaylistInfo> ImportMerge(PlaylistManager playlistManager, ResolveContext resolver,
+			Playlist addList, string listId)
 		{
 			if (!playlistManager.ExistsPlaylist(listId))
 				playlistManager.CreatePlaylist(listId).UnwrapThrow();
@@ -994,15 +1072,17 @@ namespace TS3AudioBot
 			return CommandListShow(playlistManager, resolver, listId, null, null);
 		}
 
-		[Command("list insert", "_undocumented")]  // TODO Doc
-		public static async Task<JsonValue<PlaylistItemGetData>> CommandListAdd(PlaylistManager playlistManager, ResolveContext resourceFactory, string listId, int index, string link /* TODO param */)
+		[Command("list insert", "_undocumented")] // TODO Doc
+		public static async Task<JsonValue<PlaylistItemGetData>> CommandListAdd(PlaylistManager playlistManager,
+			ResolveContext resourceFactory, string listId, int index, string link /* TODO param */)
 		{
 			PlaylistItemGetData? getData = null;
 			var playResource = await resourceFactory.Load(link);
 			playlistManager.ModifyPlaylist(listId, plist =>
 			{
 				if (index < 0 || index >= plist.Items.Count)
-					throw new CommandException(strings.error_playlist_item_index_out_of_range, CommandExceptionReason.CommandError);
+					throw new CommandException(strings.error_playlist_item_index_out_of_range,
+						CommandExceptionReason.CommandError);
 
 				var item = PlaylistItem.From(playResource);
 				plist.Insert(index, item).UnwrapThrow();
@@ -1017,7 +1097,8 @@ namespace TS3AudioBot
 		{
 			var plist = playlistManager.LoadPlaylist(name).UnwrapThrow();
 			if (index < 0 || index >= plist.Items.Count)
-				throw new CommandException(strings.error_playlist_item_index_out_of_range, CommandExceptionReason.CommandError);
+				throw new CommandException(strings.error_playlist_item_index_out_of_range,
+					CommandExceptionReason.CommandError);
 
 			return plist[index];
 		}
@@ -1028,9 +1109,9 @@ namespace TS3AudioBot
 			playlistManager.ModifyPlaylist(listId, playlist =>
 			{
 				if (from < 0 || from >= playlist.Items.Count
-					|| to < 0 || to >= playlist.Items.Count)
-				{
-					throw new CommandException(strings.error_playlist_item_index_out_of_range, CommandExceptionReason.CommandError);
+				             || to < 0 || to >= playlist.Items.Count){
+					throw new CommandException(strings.error_playlist_item_index_out_of_range,
+						CommandExceptionReason.CommandError);
 				}
 
 				if (from == to)
@@ -1043,13 +1124,15 @@ namespace TS3AudioBot
 		}
 
 		[Command("list item delete")] // TODO return modified elements
-		public static JsonEmpty CommandListItemDelete(PlaylistManager playlistManager, string listId, int index /* TODO param */)
+		public static JsonEmpty CommandListItemDelete(PlaylistManager playlistManager, string listId,
+			int index /* TODO param */)
 		{
 			PlaylistItem? deletedItem = null;
 			playlistManager.ModifyPlaylist(listId, plist =>
 			{
 				if (index < 0 || index >= plist.Items.Count)
-					throw new CommandException(strings.error_playlist_item_index_out_of_range, CommandExceptionReason.CommandError);
+					throw new CommandException(strings.error_playlist_item_index_out_of_range,
+						CommandExceptionReason.CommandError);
 
 				deletedItem = plist[index];
 				plist.RemoveAt(index);
@@ -1063,7 +1146,8 @@ namespace TS3AudioBot
 			playlistManager.ModifyPlaylist(listId, plist =>
 			{
 				if (index < 0 || index >= plist.Items.Count)
-					throw new CommandException(strings.error_playlist_item_index_out_of_range, CommandExceptionReason.CommandError);
+					throw new CommandException(strings.error_playlist_item_index_out_of_range,
+						CommandExceptionReason.CommandError);
 
 				plist[index].AudioResource.ResourceTitle = title;
 			}).UnwrapThrow();
@@ -1081,7 +1165,9 @@ namespace TS3AudioBot
 		}
 
 		[Command("list merge")]
-		public static void CommandListMerge(PlaylistManager playlistManager, string baseListId, string mergeListId) // future overload?: (IROP, IROP) -> IROP
+		public static void
+			CommandListMerge(PlaylistManager playlistManager, string baseListId,
+				string mergeListId) // future overload?: (IROP, IROP) -> IROP
 		{
 			var otherList = playlistManager.LoadPlaylist(mergeListId).UnwrapThrow();
 			playlistManager.ModifyPlaylist(baseListId, playlist =>
@@ -1095,7 +1181,8 @@ namespace TS3AudioBot
 			=> playlistManager.ModifyPlaylist(listId, plist => plist.SetTitle(title)).UnwrapThrow();
 
 		[Command("list play")]
-		public static async Task CommandListPlayInternal(PlaylistManager playlistManager, PlayManager playManager, InvokerData invoker, string listId, int? index = null)
+		public static async Task CommandListPlayInternal(PlaylistManager playlistManager, PlayManager playManager,
+			InvokerData invoker, string listId, int? index = null)
 		{
 			var plist = playlistManager.LoadPlaylist(listId).UnwrapThrow();
 
@@ -1109,7 +1196,8 @@ namespace TS3AudioBot
 		}
 
 		[Command("list queue")]
-		public static async Task CommandListQueue(PlaylistManager playlistManager, PlayManager playManager, InvokerData invoker, string listId)
+		public static async Task CommandListQueue(PlaylistManager playlistManager, PlayManager playManager,
+			InvokerData invoker, string listId)
 		{
 			var plist = playlistManager.LoadPlaylist(listId).UnwrapThrow();
 			await playManager.Enqueue(invoker, plist.Items);
@@ -1117,15 +1205,15 @@ namespace TS3AudioBot
 
 		[Command("list show")]
 		[Usage("<name> <index>", "Lets you specify the starting index from which songs should be listed.")]
-		public static JsonValue<PlaylistInfo> CommandListShow(PlaylistManager playlistManager, ResolveContext resourceFactory, string listId, int? offset = null, int? count = null)
+		public static JsonValue<PlaylistInfo> CommandListShow(PlaylistManager playlistManager,
+			ResolveContext resourceFactory, string listId, int? offset = null, int? count = null)
 		{
 			const int maxSongs = 20;
 			var plist = playlistManager.LoadPlaylist(listId).UnwrapThrow();
 			int offsetV = Tools.Clamp(offset ?? 0, 0, plist.Items.Count);
 			int countV = Tools.Clamp(count ?? maxSongs, 0, Math.Min(maxSongs, plist.Items.Count - offsetV));
 			var items = plist.Items.Skip(offsetV).Take(countV).Select(x => resourceFactory.ToApiFormat(x)).ToArray();
-			var plInfo = new PlaylistInfo(listId, plist.Title)
-			{
+			var plInfo = new PlaylistInfo(listId, plist.Title){
 				SongCount = plist.Items.Count,
 				DisplayOffset = offsetV,
 				Items = items,
@@ -1134,7 +1222,8 @@ namespace TS3AudioBot
 			return JsonValue.Create(plInfo, x =>
 			{
 				var tmb = new TextModBuilder();
-				tmb.AppendFormat(strings.cmd_list_show_header, x.Title.Mod().Bold(), x.SongCount.ToString()).Append("\n");
+				tmb.AppendFormat(strings.cmd_list_show_header, x.Title.Mod().Bold(), x.SongCount.ToString())
+					.Append("\n");
 				var index = x.DisplayOffset;
 				foreach (var plitem in x.Items!)
 					tmb.Append((index++).ToString()).Append(": ").AppendLine(plitem.Title);
@@ -1170,13 +1259,15 @@ namespace TS3AudioBot
 		}
 
 		[Command("pm channel", "_undocumented")] // TODO
-		public static Task CommandPmChannel(Ts3Client ts3Client, string message) => ts3Client.SendChannelMessage(message);
+		public static Task CommandPmChannel(Ts3Client ts3Client, string message) =>
+			ts3Client.SendChannelMessage(message);
 
 		[Command("pm server", "_undocumented")] // TODO
 		public static Task CommandPmServer(Ts3Client ts3Client, string message) => ts3Client.SendServerMessage(message);
 
 		[Command("pm user")]
-		public static Task CommandPmUser(Ts3Client ts3Client, ushort clientId, string message) => ts3Client.SendMessage(message, (ClientId)clientId);
+		public static Task CommandPmUser(Ts3Client ts3Client, ushort clientId, string message) =>
+			ts3Client.SendMessage(message, (ClientId)clientId);
 
 		[Command("pause")]
 		public static void CommandPause(Player playerConnection) => playerConnection.Paused = !playerConnection.Paused;
@@ -1191,12 +1282,242 @@ namespace TS3AudioBot
 		}
 
 		[Command("play")]
-		public static async Task CommandPlay(PlayManager playManager, InvokerData invoker, string url, params string[] attributes)
+		public static async Task CommandPlay(PlayManager playManager, InvokerData invoker, string url,
+			params string[] attributes)
 			=> await playManager.Play(invoker, url, meta: PlayManager.ParseAttributes(attributes));
 
 		[Command("play")]
-		public static async Task CommandPlay(PlayManager playManager, InvokerData invoker, IAudioResourceResult rsc, params string[] attributes)
+		public static async Task CommandPlay(PlayManager playManager, InvokerData invoker, IAudioResourceResult rsc,
+			params string[] attributes)
 			=> await playManager.Play(invoker, rsc.AudioResource, meta: PlayManager.ParseAttributes(attributes));
+
+		[Command("lyrics", "lyr")]
+		public static async Task LyricsCommand(PlayManager playManager)
+		{
+			var geniusToken = "GENIUS_TOKEN";
+			Client.Timeout = TimeSpan.FromSeconds(3);
+			if (playManager.CurrentPlayData?.PlayResource.SongInfo?.Title == null){
+				return;
+			}
+
+			string songName = playManager.CurrentPlayData?.PlayResource.SongInfo.Title;
+			var searchRequest = new HttpRequestMessage{
+				RequestUri = new Uri($"https://api.genius.com/search?q={songName}"),
+				Method = HttpMethod.Get,
+			};
+			searchRequest.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+			searchRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", geniusToken);
+
+			HttpResponseMessage response = await Client.SendAsync(searchRequest);
+			if (response.StatusCode != HttpStatusCode.OK){
+				//exception
+				return;
+			}
+
+			string content = await response.Content.ReadAsStringAsync();
+
+			var json = JObject.Parse(content);
+			var hits = json?["response"]?["hits"]?.ToArray();
+			if (hits is null) return;
+
+			var songs = new List<SongInfo>();
+			foreach (var hit in hits){
+				if (hit is null){
+					continue;
+				}
+
+				var result = hit["result"];
+				SongInfo song = JsonConvert.DeserializeObject<SongInfo>(result.ToString());
+				song.fixEncoding();
+				songs.Add(song);
+			}
+
+			foreach (var song in songs){
+				Console.WriteLine(song);
+			}
+
+			SongInfo? mostAccurate = SelectMostAccurate(songName, songs);
+			if (mostAccurate?.lyrics_url == null)
+				return;
+			Console.WriteLine(mostAccurate);
+
+			//non null check
+			if (mostAccurate?.lyrics_url == null){
+				return;
+			}
+			//scrape lyrics request
+			var lyrUrl = mostAccurate?.lyrics_url!;
+			if (!lyrUrl.StartsWith("https://genius.com")){
+				return;
+			}
+
+			var webpageRequest = new HttpRequestMessage{
+				RequestUri = new Uri(mostAccurate?.lyrics_url),
+				Method = HttpMethod.Get,
+			};
+			webpageRequest.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/plain"));
+			webpageRequest.Headers.UserAgent.ParseAdd("Mozilla/5.0 Gecko/20100101");
+			webpageRequest.Headers.AcceptLanguage.Add(new StringWithQualityHeaderValue("en-US", 0.7));
+			HttpResponseMessage pageResponse = await Client.SendAsync(webpageRequest);
+			if (pageResponse.StatusCode != HttpStatusCode.OK){
+				//exception
+				return;
+			}
+
+			byte[] bytes = await pageResponse.Content.ReadAsByteArrayAsync();
+			var pageContent = Encoding.UTF8.GetString(bytes);
+			string lyrics = ScrapeLyrics(pageContent);
+			Console.WriteLine("SCRAPED");
+			Console.WriteLine(lyrics);
+		}
+
+		private static string ScrapeLyrics(string page)
+		{
+			if (page == null)
+				return "";
+			const string CONTAINER = "Lyrics__Container-sc";
+			const string INSTRUMENTAL = "This song is an instrumental";
+			int fakeContainer = page.IndexOf(CONTAINER, StringComparison.Ordinal);
+			if (fakeContainer == -1){
+				return page.Contains(INSTRUMENTAL) ? "This song is an instrumental" : "";
+			}
+
+			int lyricContainer = page.IndexOf(CONTAINER, fakeContainer + 1, StringComparison.Ordinal);
+			int textStart = page.IndexOf('>', lyricContainer);
+			StringBuilder lyrics = new StringBuilder();
+			int angleBrackets = 0, divCounter = 1;
+			bool spaced = false;
+			for (int i = textStart + 1; i < page.Length; i++){
+				switch (page[i]){
+				case '<':
+					//open + close
+					if (page.Substring(i + 1, 2) == "br"){
+						i += 4;
+						if (page[i + 3] == '/'){
+							i++;
+						}
+
+						if (!spaced)
+							lyrics.Append('\n');
+						spaced = true;
+						continue;
+					}
+
+					if (page.Substring(i + 1, 4) == "/div"){
+						if (divCounter == 0){
+							goto exitLoop;
+						}
+
+						i += 4;
+						divCounter--;
+					}
+					else if (page.Substring(i + 1, 3) == "div"){
+						i += 3;
+						divCounter++;
+					}
+
+					angleBrackets++;
+					break;
+				case '&':
+					if (page.Substring(i + 1, 5) == "#x27;"){
+						i += 5;
+						lyrics.Append('\'');
+					}
+
+					break;
+				case '\\':
+				case '\n':
+				case ';':
+					break;
+				case '>':
+					if (angleBrackets == 0){
+						goto exitLoop;
+					}
+
+					angleBrackets--;
+					break;
+				default:
+					if (angleBrackets == 0){
+						spaced = false;
+						lyrics.Append(page[i]);
+					}
+
+					break;
+				}
+			}
+
+			stripDigits(lyrics, 3);
+			if (endsWith(lyrics, "Embed")){
+				lyrics.Length -= 5;
+			}
+
+			stripDigits(lyrics, 4);
+			if (endsWith(lyrics, "You might also like")){
+				lyrics.Length -= 19;
+			}
+
+			exitLoop:
+			return lyrics.ToString();
+		}
+
+		private static void stripDigits(StringBuilder str, int quantity)
+		{
+			if (quantity <= 0)
+				return;
+			int currLen = str.Length;
+			for (int i = currLen - 1; i >= currLen - quantity && i > -1; i--){
+				if (char.IsDigit(str[i])){
+					str.Length = i;
+				}
+			}
+		}
+
+		private static bool endsWith(StringBuilder str, string seq)
+		{
+			int mainLen = str.Length;
+			int start = str.Length - seq.Length;
+			if (start < 0){
+				return false;
+			}
+
+			for (int i = start, j = 0; i < mainLen; i++, j++){
+				if (str[i] != seq[j]){
+					return false;
+				}
+			}
+
+			return true;
+		}
+
+		private static SongInfo? SelectMostAccurate(string name, List<SongInfo> songs)
+		{
+			int len = songs.Count;
+			if (len == 0){
+				return null;
+			}
+
+			double[] accuracies = new double[len];
+			double max = 0;
+			int index = -1;
+			for (int i = 0; i < len; i++){
+				string? fullTitle = songs[i].full_title;
+				if (fullTitle == null)
+					continue;
+
+				accuracies[i] = StringMatching.Accuracy(name, fullTitle);
+				accuracies[i] /= fullTitle.Length;
+				if (accuracies[i] > max){
+					max = accuracies[i];
+					index = i;
+				}
+			}
+
+			if (index == -1){
+				index = 0;
+			}
+
+			return songs[index];
+		}
 
 		[Command("plugin list")]
 		public static JsonArray<PluginStatusInfo> CommandPluginList(PluginManager pluginManager, Bot? bot = null)
@@ -1207,7 +1528,8 @@ namespace TS3AudioBot
 		{
 			var result = pluginManager.StopPlugin(identifier, bot);
 			if (result != PluginResponse.Ok)
-				throw new CommandException(string.Format(strings.error_plugin_error, result /*TODO*/), CommandExceptionReason.CommandError);
+				throw new CommandException(string.Format(strings.error_plugin_error, result /*TODO*/),
+					CommandExceptionReason.CommandError);
 		}
 
 		[Command("plugin load")]
@@ -1215,7 +1537,8 @@ namespace TS3AudioBot
 		{
 			var result = pluginManager.StartPlugin(identifier, bot);
 			if (result != PluginResponse.Ok)
-				throw new CommandException(string.Format(strings.error_plugin_error, result /*TODO*/), CommandExceptionReason.CommandError);
+				throw new CommandException(string.Format(strings.error_plugin_error, result /*TODO*/),
+					CommandExceptionReason.CommandError);
 		}
 
 		[Command("previous")]
@@ -1233,7 +1556,9 @@ namespace TS3AudioBot
 		}
 
 		[Command("quiz")]
-		public static JsonValue<bool> CommandQuiz(Bot bot) => new JsonValue<bool>(bot.QuizMode, string.Format(strings.info_status_quizmode, bot.QuizMode ? strings.info_on : strings.info_off));
+		public static JsonValue<bool> CommandQuiz(Bot bot) => new JsonValue<bool>(bot.QuizMode,
+			string.Format(strings.info_status_quizmode, bot.QuizMode ? strings.info_on : strings.info_off));
+
 		[Command("quiz on")]
 		public static async Task CommandQuizOn(Bot bot, PlayManager playManager)
 		{
@@ -1242,6 +1567,7 @@ namespace TS3AudioBot
 				await bot.GenerateStatusImage(true, playManager.CurrentPlayData);
 			await bot.UpdateBotStatus();
 		}
+
 		[Command("quiz off")]
 		public static async Task CommandQuizOff(Bot bot, PlayManager playManager, ClientCall? invoker = null)
 		{
@@ -1254,46 +1580,59 @@ namespace TS3AudioBot
 		}
 
 		[Command("random")]
-		public static JsonValue<bool> CommandRandom(PlaylistManager playlistManager) => new JsonValue<bool>(playlistManager.Random, string.Format(strings.info_status_random, playlistManager.Random ? strings.info_on : strings.info_off));
+		public static JsonValue<bool> CommandRandom(PlaylistManager playlistManager) => new JsonValue<bool>(
+			playlistManager.Random,
+			string.Format(strings.info_status_random, playlistManager.Random ? strings.info_on : strings.info_off));
+
 		[Command("random on")]
 		public static void CommandRandomOn(PlaylistManager playlistManager) => playlistManager.Random = true;
+
 		[Command("random off")]
 		public static void CommandRandomOff(PlaylistManager playlistManager) => playlistManager.Random = false;
+
 		[Command("random seed", "cmd_random_seed_help")]
 		public static string CommandRandomSeed(PlaylistManager playlistManager)
 		{
 			string seed = Util.FromSeed(playlistManager.Seed);
 			return string.IsNullOrEmpty(seed) ? strings.info_empty : seed;
 		}
+
 		[Command("random seed", "cmd_random_seed_string_help")]
 		public static void CommandRandomSeed(PlaylistManager playlistManager, string newSeed)
 		{
 			if (newSeed.Any(c => !char.IsLetter(c)))
-				throw new CommandException(strings.cmd_random_seed_only_letters_allowed, CommandExceptionReason.CommandError);
+				throw new CommandException(strings.cmd_random_seed_only_letters_allowed,
+					CommandExceptionReason.CommandError);
 			playlistManager.Seed = Util.ToSeed(newSeed.ToLowerInvariant());
 		}
+
 		[Command("random seed", "cmd_random_seed_int_help")]
-		public static void CommandRandomSeed(PlaylistManager playlistManager, int newSeed) => playlistManager.Seed = newSeed;
+		public static void CommandRandomSeed(PlaylistManager playlistManager, int newSeed) =>
+			playlistManager.Seed = newSeed;
 
 		[Command("repeat")]
 		public static JsonValue<LoopMode> CommandRepeat(PlaylistManager playlistManager)
-			=> new JsonValue<LoopMode>(playlistManager.Loop, x => x switch
-			{
+			=> new JsonValue<LoopMode>(playlistManager.Loop, x => x switch{
 				LoopMode.Off => strings.cmd_repeat_info_off,
 				LoopMode.One => strings.cmd_repeat_info_one,
 				LoopMode.All => strings.cmd_repeat_info_all,
 				_ => throw Tools.UnhandledDefault(playlistManager.Loop),
 			});
+
 		[Command("repeat off")]
 		public static void CommandRepeatOff(PlaylistManager playlistManager) => playlistManager.Loop = LoopMode.Off;
+
 		[Command("repeat one")]
 		public static void CommandRepeatOne(PlaylistManager playlistManager) => playlistManager.Loop = LoopMode.One;
+
 		[Command("repeat all")]
 		public static void CommandRepeatAll(PlaylistManager playlistManager) => playlistManager.Loop = LoopMode.All;
 
 		[Command("rights can")]
-		public static async Task<JsonArray<string>> CommandRightsCan(ExecutionInformation info, RightsManager rightsManager, params string[] rights)
-			=> new JsonArray<string>(await rightsManager.GetRightsSubset(info, rights), r => r.Count > 0 ? string.Join(", ", r) : strings.info_empty);
+		public static async Task<JsonArray<string>> CommandRightsCan(ExecutionInformation info,
+			RightsManager rightsManager, params string[] rights)
+			=> new JsonArray<string>(await rightsManager.GetRightsSubset(info, rights),
+				r => r.Count > 0 ? string.Join(", ", r) : strings.info_empty);
 
 		[Command("rights reload")]
 		public static JsonEmpty CommandRightsReload(RightsManager rightsManager)
@@ -1302,7 +1641,8 @@ namespace TS3AudioBot
 				return new JsonEmpty(strings.info_ok);
 
 			// TODO: this can be done nicer by returning the errors and warnings from parsing
-			throw new CommandException(strings.cmd_rights_reload_error_parsing_file, CommandExceptionReason.CommandError);
+			throw new CommandException(strings.cmd_rights_reload_error_parsing_file,
+				CommandExceptionReason.CommandError);
 		}
 
 		[Command("rng")]
@@ -1311,18 +1651,16 @@ namespace TS3AudioBot
 		[Usage("<min> <max>", "Gets a number between <min> and <max>")]
 		public static int CommandRng(int? first = null, int? second = null)
 		{
-			if (first != null && second != null)
-			{
+			if (first != null && second != null){
 				return Tools.Random.Next(Math.Min(first.Value, second.Value), Math.Max(first.Value, second.Value));
 			}
-			else if (first != null)
-			{
+			else if (first != null){
 				if (first.Value <= 0)
-					throw new CommandException(strings.cmd_rng_value_must_be_positive, CommandExceptionReason.CommandError);
+					throw new CommandException(strings.cmd_rng_value_must_be_positive,
+						CommandExceptionReason.CommandError);
 				return Tools.Random.Next(first.Value);
 			}
-			else
-			{
+			else{
 				return Tools.Random.Next(0, 100);
 			}
 		}
@@ -1354,7 +1692,8 @@ namespace TS3AudioBot
 			var sessionList = session.GetSearchResult();
 
 			if (index < 0 || index >= sessionList.Count)
-				throw new CommandException(string.Format(strings.error_value_not_in_range, 0, sessionList.Count), CommandExceptionReason.CommandError);
+				throw new CommandException(string.Format(strings.error_value_not_in_range, 0, sessionList.Count),
+					CommandExceptionReason.CommandError);
 
 			return sessionList[index];
 		}
@@ -1370,8 +1709,7 @@ namespace TS3AudioBot
 					strings.cmd_search_header.Mod().Bold(),
 					$"!search play <{strings.info_number}>".Mod().Italic(),
 					$"!search add <{strings.info_number}>".Mod().Italic()).Append("\n");
-				for (int i = 0; i < searchResults.Count; i++)
-				{
+				for (int i = 0; i < searchResults.Count; i++){
 					tmb.AppendFormat("{0}: {1}\n", i.ToString().Mod().Bold(), searchResults[i].ResourceTitle);
 				}
 
@@ -1379,11 +1717,13 @@ namespace TS3AudioBot
 			});
 
 		[Command("search add", "_undocumented")] // TODO Doc
-		public static async Task CommandSearchAdd(PlayManager playManager, InvokerData invoker, UserSession session, int index)
+		public static async Task CommandSearchAdd(PlayManager playManager, InvokerData invoker, UserSession session,
+			int index)
 			=> await playManager.Enqueue(invoker, session.GetSingleSearchResult(index));
 
 		[Command("search from", "_undocumented")] // TODO Doc
-		public static async Task<JsonArray<AudioResource>> PropagiateSearch(UserSession session, CallerInfo callerInfo, ResolveContext resolver, string resolverName, string query)
+		public static async Task<JsonArray<AudioResource>> PropagiateSearch(UserSession session, CallerInfo callerInfo,
+			ResolveContext resolver, string resolverName, string query)
 		{
 			var list = await resolver.Search(resolverName, query);
 			session.Set(SessionConst.SearchResult, list);
@@ -1395,7 +1735,8 @@ namespace TS3AudioBot
 			=> session.GetSingleSearchResult(index);
 
 		[Command("search play", "_undocumented")] // TODO Doc
-		public static async Task CommandSeachPlay(PlayManager playManager, ClientCall clientCall, UserSession session, int index)
+		public static async Task CommandSeachPlay(PlayManager playManager, ClientCall clientCall, UserSession session,
+			int index)
 			=> await playManager.Play(clientCall, session.GetSingleSearchResult(index));
 
 		[Command("search show", "_undocumented")] // TODO Doc
@@ -1410,16 +1751,21 @@ namespace TS3AudioBot
 
 		[Command("settings")]
 		public static void CommandSettings()
-			=> throw new CommandException(string.Format(strings.cmd_settings_empty_usage, "'rights.path', 'web.api.enabled', 'tools.*'"), CommandExceptionReason.MissingParameter);
+			=> throw new CommandException(
+				string.Format(strings.cmd_settings_empty_usage, "'rights.path', 'web.api.enabled', 'tools.*'"),
+				CommandExceptionReason.MissingParameter);
 
 		[Command("settings copy")]
-		public static void CommandSettingsCopy(ConfRoot config, string from, string to) => config.CopyBotConfig(from, to).UnwrapThrow();
+		public static void CommandSettingsCopy(ConfRoot config, string from, string to) =>
+			config.CopyBotConfig(from, to).UnwrapThrow();
 
 		[Command("settings create")]
-		public static void CommandSettingsCreate(ConfRoot config, string name) => config.CreateBotConfig(name).UnwrapThrow();
+		public static void CommandSettingsCreate(ConfRoot config, string name) =>
+			config.CreateBotConfig(name).UnwrapThrow();
 
 		[Command("settings delete")]
-		public static void CommandSettingsDelete(ConfRoot config, string name) => config.DeleteBotConfig(name).UnwrapThrow();
+		public static void CommandSettingsDelete(ConfRoot config, string name) =>
+			config.DeleteBotConfig(name).UnwrapThrow();
 
 		[Command("settings get")]
 		public static ConfigPart CommandSettingsGet(ConfBot config, string? path = null)
@@ -1429,25 +1775,31 @@ namespace TS3AudioBot
 		public static void CommandSettingsSet(ConfBot config, string path, string? value = null)
 		{
 			SettingsSet(config, path, value);
-			if (!config.SaveWhenExists())
-			{
-				throw new CommandException("Value was set but could not be saved to file. All changes are temporary and will be lost when the bot restarts.",
+			if (!config.SaveWhenExists()){
+				throw new CommandException(
+					"Value was set but could not be saved to file. All changes are temporary and will be lost when the bot restarts.",
 					CommandExceptionReason.CommandError);
 			}
 		}
 
 		[Command("settings bot get", "cmd_settings_get_help")]
-		public static async Task<ConfigPart> CommandSettingsBotGet(BotManager bots, ConfRoot config, string botName, string? path = null)
+		public static async Task<ConfigPart> CommandSettingsBotGet(BotManager bots, ConfRoot config, string botName,
+			string? path = null)
 		{
 			var bot = bots.GetBotLock(botName);
 			return await GetConf(bot, config, botName, b => CommandSettingsGet(b, path));
 		}
 
 		[Command("settings bot set", "cmd_settings_set_help")]
-		public static async Task CommandSettingsBotSet(BotManager bots, ConfRoot config, string botName, string path, string? value = null)
+		public static async Task CommandSettingsBotSet(BotManager bots, ConfRoot config, string botName, string path,
+			string? value = null)
 		{
 			var bot = bots.GetBotLock(botName);
-			await GetConf(bot, config, botName, b => { CommandSettingsSet(b, path, value); return null!; });
+			await GetConf(bot, config, botName, b =>
+			{
+				CommandSettingsSet(b, path, value);
+				return null!;
+			});
 		}
 
 		[Command("settings bot reload")]
@@ -1467,9 +1819,9 @@ namespace TS3AudioBot
 		public static void CommandSettingsGlobalSet(ConfRoot config, string path, string? value = null)
 		{
 			SettingsSet(config, path, value);
-			if (!config.Save())
-			{
-				throw new CommandException("Value was set but could not be saved to file. All changes are temporary and will be lost when the bot restarts.",
+			if (!config.Save()){
+				throw new CommandException(
+					"Value was set but could not be saved to file. All changes are temporary and will be lost when the bot restarts.",
 					CommandExceptionReason.CommandError);
 			}
 		}
@@ -1481,53 +1833,51 @@ namespace TS3AudioBot
 			throw new NotImplementedException();
 		}
 
-		private static async Task<ConfigPart> GetConf(Bot? bot, ConfRoot config, string name, Func<ConfBot, ConfigPart> scheduledAction)
+		private static async Task<ConfigPart> GetConf(Bot? bot, ConfRoot config, string name,
+			Func<ConfBot, ConfigPart> scheduledAction)
 		{
-			if (bot != null)
-			{
+			if (bot != null){
 				if (bot.Injector.TryGet<ConfBot>(out var conf))
 					return await bot.Scheduler.InvokeAsync(() => Task.FromResult(scheduledAction(conf)));
 				else
 					throw new CommandException("Missing ConfBot", CommandExceptionReason.CommandError);
 			}
-			else
-			{
+			else{
 				var getTemplateResult = config.GetBotConfig(name);
 				if (!getTemplateResult.Ok)
-					throw new CommandException(strings.error_bot_does_not_exist, getTemplateResult.Error, CommandExceptionReason.CommandError);
+					throw new CommandException(strings.error_bot_does_not_exist, getTemplateResult.Error,
+						CommandExceptionReason.CommandError);
 				return await Task.FromResult(scheduledAction(getTemplateResult.Value));
 			}
 		}
 
-		private static ConfigPart SettingsGet(ConfigPart config, string? path = null) => config.ByPathAsArray(path ?? "").SettingsGetSingle();
+		private static ConfigPart SettingsGet(ConfigPart config, string? path = null) =>
+			config.ByPathAsArray(path ?? "").SettingsGetSingle();
 
 		private static void SettingsSet(ConfigPart config, string path, string? value)
 		{
 			var setConfig = config.ByPathAsArray(path).SettingsGetSingle();
-			if (setConfig is IJsonSerializable jsonConfig)
-			{
+			if (setConfig is IJsonSerializable jsonConfig){
 				var result = jsonConfig.FromJson(value ?? "");
 				if (!result.Ok)
-					throw new CommandException($"Failed to set the value ({result.Error}).", CommandExceptionReason.CommandError); // LOC: TODO
+					throw new CommandException($"Failed to set the value ({result.Error}).",
+						CommandExceptionReason.CommandError); // LOC: TODO
 			}
-			else
-			{
-				throw new CommandException("This value currently cannot be set.", CommandExceptionReason.CommandError); // LOC: TODO
+			else{
+				throw new CommandException("This value currently cannot be set.",
+					CommandExceptionReason.CommandError); // LOC: TODO
 			}
 		}
 
 		private static ConfigPart SettingsGetSingle(this ConfigPart[] configPartsList)
 		{
-			if (configPartsList.Length == 0)
-			{
+			if (configPartsList.Length == 0){
 				throw new CommandException(strings.error_config_no_key_found, CommandExceptionReason.CommandError);
 			}
-			else if (configPartsList.Length == 1)
-			{
+			else if (configPartsList.Length == 1){
 				return configPartsList[0];
 			}
-			else
-			{
+			else{
 				throw new CommandException(
 					string.Format(
 						strings.error_config_multiple_keys_found + "\n",
@@ -1544,7 +1894,8 @@ namespace TS3AudioBot
 		}
 
 		[Command("song")]
-		public static JsonValue<CurrentSongInfo> CommandSong(PlayManager playManager, Player player, Bot bot, ClientCall? invoker = null)
+		public static JsonValue<CurrentSongInfo> CommandSong(PlayManager playManager, Player player, Bot bot,
+			ClientCall? invoker = null)
 		{
 			if (playManager.CurrentPlayData is null)
 				throw new CommandException(strings.info_currently_not_playing, CommandExceptionReason.CommandError);
@@ -1554,8 +1905,7 @@ namespace TS3AudioBot
 			var position = player.Position ?? TimeSpan.Zero;
 			var length = player.Length ?? playManager.CurrentPlayData.PlayResource.SongInfo?.Length ?? TimeSpan.Zero;
 			return JsonValue.Create(
-				new CurrentSongInfo
-				{
+				new CurrentSongInfo{
 					Title = playManager.CurrentPlayData.ResourceData.ResourceTitle,
 					AudioType = playManager.CurrentPlayData.ResourceData.AudioType,
 					Link = playManager.CurrentPlayData.SourceLink,
@@ -1589,7 +1939,8 @@ namespace TS3AudioBot
 		}
 
 		[Command("subscribe tempchannel")]
-		public static void CommandSubscribeTempChannel(IVoiceTarget targetManager, ClientCall? invoker = null, ChannelId? channel = null)
+		public static void CommandSubscribeTempChannel(IVoiceTarget targetManager, ClientCall? invoker = null,
+			ChannelId? channel = null)
 		{
 			var subChan = channel ?? invoker?.ChannelId ?? ChannelId.Null;
 			if (subChan != ChannelId.Null)
@@ -1597,10 +1948,10 @@ namespace TS3AudioBot
 		}
 
 		[Command("subscribe channel")]
-		public static void CommandSubscribeChannel(IVoiceTarget targetManager, ClientCall? invoker = null, params ChannelId[] channels)
+		public static void CommandSubscribeChannel(IVoiceTarget targetManager, ClientCall? invoker = null,
+			params ChannelId[] channels)
 		{
-			if (channels.Length == 0)
-			{
+			if (channels.Length == 0){
 				var subChan = invoker?.ChannelId;
 				if (subChan.HasValue)
 					targetManager.WhisperChannelSubscribe(false, subChan.Value);
@@ -1618,13 +1969,12 @@ namespace TS3AudioBot
 		public static JsonValue CommandSystemInfo(SystemMonitor systemMonitor)
 		{
 			var sysInfo = systemMonitor.GetReport();
-			return JsonValue.Create(new
-			{
-				memory = sysInfo.Memory,
-				cpu = sysInfo.Cpu,
-				starttime = systemMonitor.StartTime,
-			}, x => new TextModBuilder().AppendFormat(
-				"\ncpu: {0}% \nmemory: {1} \nstartime: {2}".Mod().Bold(),
+			return JsonValue.Create(new{
+					memory = sysInfo.Memory,
+					cpu = sysInfo.Cpu,
+					starttime = systemMonitor.StartTime,
+				}, x => new TextModBuilder().AppendFormat(
+					"\ncpu: {0}% \nmemory: {1} \nstartime: {2}".Mod().Bold(),
 					(x.cpu.Last() * 100).ToString("0.#"),
 					Util.FormatBytesHumanReadable(x.memory.Last()),
 					x.starttime.ToString(Thread.CurrentThread.CurrentCulture)).ToString()
@@ -1632,22 +1982,22 @@ namespace TS3AudioBot
 		}
 
 		[Command("system quit", "cmd_quit_help")]
-		public static JsonEmpty CommandSystemQuit(Core core, CallerInfo caller, UserSession? session = null, string? param = null)
+		public static JsonEmpty CommandSystemQuit(Core core, CallerInfo caller, UserSession? session = null,
+			string? param = null)
 		{
 			const string force = "force";
 
-			if (caller.ApiCall || param == force)
-			{
+			if (caller.ApiCall || param == force){
 				core.Stop();
 				return new JsonEmpty(string.Empty);
 			}
 
 			Task<string?> ResponseQuit(string message)
 			{
-				if (TextUtil.GetAnswer(message) == Answer.Yes)
-				{
+				if (TextUtil.GetAnswer(message) == Answer.Yes){
 					CommandSystemQuit(core, caller, session, force);
 				}
+
 				return Task.FromResult<string?>(null);
 			}
 
@@ -1662,7 +2012,8 @@ namespace TS3AudioBot
 		public static async Task<string> CommandTake(ExecutionInformation info, IReadOnlyList<ICommand> arguments)
 		{
 			if (arguments.Count < 2)
-				throw new CommandException(strings.error_cmd_at_least_two_argument, CommandExceptionReason.MissingParameter);
+				throw new CommandException(strings.error_cmd_at_least_two_argument,
+					CommandExceptionReason.MissingParameter);
 
 			int start = 0;
 			string? delimiter = null;
@@ -1670,25 +2021,27 @@ namespace TS3AudioBot
 			// Get count
 			var res = await arguments[0].ExecuteToString(info, Array.Empty<ICommand>());
 			if (!int.TryParse(res, out int count) || count < 0)
-				throw new CommandException("Count must be an integer >= 0", CommandExceptionReason.CommandError); // LOC: TODO
+				throw new CommandException("Count must be an integer >= 0",
+					CommandExceptionReason.CommandError); // LOC: TODO
 
-			if (arguments.Count > 2)
-			{
+			if (arguments.Count > 2){
 				// Get start
 				res = await arguments[1].ExecuteToString(info, Array.Empty<ICommand>());
 				if (!int.TryParse(res, out start) || start < 0)
-					throw new CommandException("Start must be an integer >= 0", CommandExceptionReason.CommandError); // LOC: TODO
+					throw new CommandException("Start must be an integer >= 0",
+						CommandExceptionReason.CommandError); // LOC: TODO
 			}
 
 			// Get delimiter if exists
 			if (arguments.Count > 3)
 				delimiter = await arguments[2].ExecuteToString(info, Array.Empty<ICommand>());
 
-			string text = await arguments[Math.Min(arguments.Count - 1, 3)].ExecuteToString(info, Array.Empty<ICommand>());
+			string text = await arguments[Math.Min(arguments.Count - 1, 3)]
+				.ExecuteToString(info, Array.Empty<ICommand>());
 
 			var splitted = delimiter is null
 				? text.Split()
-				: text.Split(new[] { delimiter }, StringSplitOptions.None);
+				: text.Split(new[]{ delimiter }, StringSplitOptions.None);
 			if (splitted.Length < start + count)
 				throw new CommandException(strings.cmd_take_not_enough_arguements, CommandExceptionReason.CommandError);
 			var splittedarr = splitted.Skip(start).Take(count).ToArray();
@@ -1704,16 +2057,15 @@ namespace TS3AudioBot
 		}
 
 		[Command("unsubscribe channel")]
-		public static void CommandUnsubscribeChannel(IVoiceTarget targetManager, ClientCall? invoker = null, params ChannelId[] channels)
+		public static void CommandUnsubscribeChannel(IVoiceTarget targetManager, ClientCall? invoker = null,
+			params ChannelId[] channels)
 		{
-			if (channels.Length == 0)
-			{
+			if (channels.Length == 0){
 				var subChan = invoker?.ChannelId;
 				if (subChan.HasValue)
 					targetManager.WhisperChannelUnsubscribe(false, subChan.Value);
 			}
-			else
-			{
+			else{
 				targetManager.WhisperChannelUnsubscribe(false, channels);
 			}
 		}
@@ -1728,16 +2080,19 @@ namespace TS3AudioBot
 		}
 
 		[Command("version")]
-		public static JsonValue<BuildData> CommandVersion() => new JsonValue<BuildData>(SystemData.AssemblyData, d => d.ToLongString());
+		public static JsonValue<BuildData> CommandVersion() =>
+			new JsonValue<BuildData>(SystemData.AssemblyData, d => d.ToLongString());
 
 		[Command("volume")]
 		public static JsonValue<float> CommandVolume(Player playerConnection)
-			=> new JsonValue<float>(playerConnection.Volume, string.Format(strings.cmd_volume_current, playerConnection.Volume.ToString("0.#")));
+			=> new JsonValue<float>(playerConnection.Volume,
+				string.Format(strings.cmd_volume_current, playerConnection.Volume.ToString("0.#")));
 
 		[Command("volume")]
 		[Usage("<level>", "A new volume level between 0 and 100.")]
 		[Usage("+/-<level>", "Adds or subtracts a value from the current volume.")]
-		public static void CommandVolume(ExecutionInformation info, Player playerConnection, CallerInfo caller, ConfBot config, string volume, UserSession? session = null)
+		public static void CommandVolume(ExecutionInformation info, Player playerConnection, CallerInfo caller,
+			ConfBot config, string volume, UserSession? session = null)
 		{
 			volume = volume.Trim();
 			bool relPos = volume.StartsWith("+", StringComparison.Ordinal);
@@ -1754,48 +2109,51 @@ namespace TS3AudioBot
 			else newVolume = parsedVolume;
 
 			if (newVolume < AudioValues.MinVolume || newVolume > AudioValues.MaxVolume)
-				throw new CommandException(string.Format(strings.cmd_volume_is_limited, AudioValues.MinVolume, AudioValues.MaxVolume), CommandExceptionReason.CommandError);
+				throw new CommandException(
+					string.Format(strings.cmd_volume_is_limited, AudioValues.MinVolume, AudioValues.MaxVolume),
+					CommandExceptionReason.CommandError);
 
-			if (newVolume <= config.Audio.MaxUserVolume || newVolume <= curVolume || caller.ApiCall)
-			{
+			if (newVolume <= config.Audio.MaxUserVolume || newVolume <= curVolume || caller.ApiCall){
 				playerConnection.Volume = newVolume;
 			}
-			else if (session != null)
-			{
+			else if (session != null){
 				async Task<string?> ResponseVolume(string message)
 				{
-					if (TextUtil.GetAnswer(message) == Answer.Yes)
-					{
+					if (TextUtil.GetAnswer(message) == Answer.Yes){
 						if (await info.HasRights(RightHighVolume))
 							playerConnection.Volume = newVolume;
 						else
 							return strings.cmd_volume_missing_high_volume_permission;
 					}
+
 					return null;
 				}
 
 				session.SetResponse(ResponseVolume);
-				throw new CommandException(strings.cmd_volume_high_volume_confirm + YesNoOption, CommandExceptionReason.CommandError);
+				throw new CommandException(strings.cmd_volume_high_volume_confirm + YesNoOption,
+					CommandExceptionReason.CommandError);
 			}
 		}
 
 		[Command("whisper all")]
-		public static void CommandWhisperAll(IVoiceTarget targetManager) => CommandWhisperGroup(targetManager, GroupWhisperType.AllClients, GroupWhisperTarget.AllChannels);
+		public static void CommandWhisperAll(IVoiceTarget targetManager) => CommandWhisperGroup(targetManager,
+			GroupWhisperType.AllClients, GroupWhisperTarget.AllChannels);
 
 		[Command("whisper group")]
-		public static void CommandWhisperGroup(IVoiceTarget targetManager, GroupWhisperType type, GroupWhisperTarget target, ulong? targetId = null)
+		public static void CommandWhisperGroup(IVoiceTarget targetManager, GroupWhisperType type,
+			GroupWhisperTarget target, ulong? targetId = null)
 		{
-			if (type == GroupWhisperType.ServerGroup || type == GroupWhisperType.ChannelGroup)
-			{
+			if (type == GroupWhisperType.ServerGroup || type == GroupWhisperType.ChannelGroup){
 				if (targetId is null)
-					throw new CommandException(strings.cmd_whisper_group_missing_target, CommandExceptionReason.CommandError);
+					throw new CommandException(strings.cmd_whisper_group_missing_target,
+						CommandExceptionReason.CommandError);
 				targetManager.SetGroupWhisper(type, target, targetId.Value);
 				targetManager.SendMode = TargetSendMode.WhisperGroup;
 			}
-			else
-			{
+			else{
 				if (targetId != null)
-					throw new CommandException(strings.cmd_whisper_group_superfluous_target, CommandExceptionReason.CommandError);
+					throw new CommandException(strings.cmd_whisper_group_superfluous_target,
+						CommandExceptionReason.CommandError);
 				targetManager.SetGroupWhisper(type, target, 0);
 				targetManager.SendMode = TargetSendMode.WhisperGroup;
 			}
@@ -1804,50 +2162,57 @@ namespace TS3AudioBot
 		[Command("whisper list")]
 		public static JsonObject CommandWhisperList(IVoiceTarget targetManager)
 		{
-			return JsonValue.Create(new
-			{
+			return JsonValue.Create(new{
 #pragma warning disable IDE0037
-				SendMode = targetManager.SendMode,
-				GroupWhisper = targetManager.SendMode == TargetSendMode.WhisperGroup ?
-				new
-				{
-					Target = targetManager.GroupWhisperTarget,
-					TargetId = targetManager.GroupWhisperTargetId,
-					Type = targetManager.GroupWhisperType,
-				}
-				: null,
-				WhisperClients = targetManager.WhisperClients,
-				WhisperChannel = targetManager.WhisperChannel,
+					SendMode = targetManager.SendMode,
+					GroupWhisper = targetManager.SendMode == TargetSendMode.WhisperGroup
+						? new{
+							Target = targetManager.GroupWhisperTarget,
+							TargetId = targetManager.GroupWhisperTargetId,
+							Type = targetManager.GroupWhisperType,
+						}
+						: null,
+					WhisperClients = targetManager.WhisperClients,
+					WhisperChannel = targetManager.WhisperChannel,
 #pragma warning restore IDE0037
-			},
-			x =>
-			{
-				var strb = new StringBuilder(strings.cmd_whisper_list_header);
-				strb.AppendLine();
-				switch (x.SendMode)
+				},
+				x =>
 				{
-				case TargetSendMode.None: strb.Append(strings.cmd_whisper_list_target_none); break;
-				case TargetSendMode.Voice: strb.Append(strings.cmd_whisper_list_target_voice); break;
-				case TargetSendMode.Whisper:
-					strb.Append(strings.cmd_whisper_list_target_whisper_clients).Append(": [").Append(string.Join(",", x.WhisperClients)).Append("]\n");
-					strb.Append(strings.cmd_whisper_list_target_whisper_channel).Append(": [").Append(string.Join(",", x.WhisperChannel)).Append("]");
-					break;
-				case TargetSendMode.WhisperGroup:
-					if (x.GroupWhisper is null) throw new ArgumentNullException();
-					strb.AppendFormat(strings.cmd_whisper_list_target_whispergroup, x.GroupWhisper.Type, x.GroupWhisper.Target, x.GroupWhisper.TargetId);
-					break;
-				default:
-					throw Tools.UnhandledDefault(x.SendMode);
-				}
-				return strb.ToString();
-			});
+					var strb = new StringBuilder(strings.cmd_whisper_list_header);
+					strb.AppendLine();
+					switch (x.SendMode){
+					case TargetSendMode.None:
+						strb.Append(strings.cmd_whisper_list_target_none);
+						break;
+					case TargetSendMode.Voice:
+						strb.Append(strings.cmd_whisper_list_target_voice);
+						break;
+					case TargetSendMode.Whisper:
+						strb.Append(strings.cmd_whisper_list_target_whisper_clients).Append(": [")
+							.Append(string.Join(",", x.WhisperClients)).Append("]\n");
+						strb.Append(strings.cmd_whisper_list_target_whisper_channel).Append(": [")
+							.Append(string.Join(",", x.WhisperChannel)).Append("]");
+						break;
+					case TargetSendMode.WhisperGroup:
+						if (x.GroupWhisper is null) throw new ArgumentNullException();
+						strb.AppendFormat(strings.cmd_whisper_list_target_whispergroup, x.GroupWhisper.Type,
+							x.GroupWhisper.Target, x.GroupWhisper.TargetId);
+						break;
+					default:
+						throw Tools.UnhandledDefault(x.SendMode);
+					}
+
+					return strb.ToString();
+				});
 		}
 
 		[Command("whisper off")]
-		public static void CommandWhisperOff(IVoiceTarget targetManager) => targetManager.SendMode = TargetSendMode.Voice;
+		public static void CommandWhisperOff(IVoiceTarget targetManager) =>
+			targetManager.SendMode = TargetSendMode.Voice;
 
 		[Command("whisper subscription")]
-		public static void CommandWhisperSubsription(IVoiceTarget targetManager) => targetManager.SendMode = TargetSendMode.Whisper;
+		public static void CommandWhisperSubsription(IVoiceTarget targetManager) =>
+			targetManager.SendMode = TargetSendMode.Whisper;
 
 		[Command("xecute")]
 		public static async Task CommandXecute(ExecutionInformation info, IReadOnlyList<ICommand> arguments)
@@ -1880,16 +2245,14 @@ namespace TS3AudioBot
 
 			var behaviour = LongTextBehaviour.Split;
 			var limit = 1;
-			if (info.TryGet<ConfBot>(out var config))
-			{
+			if (info.TryGet<ConfBot>(out var config)){
 				behaviour = config.Commands.LongMessage;
 				limit = config.Commands.LongMessageSplitLimit;
 			}
 
-			foreach (var msgPart in LongTextTransform.Split(message, behaviour, ts3Client.ServerConstants.MaxSizeTextMessage, limit))
-			{
-				switch (invoker.Visibiliy.Value)
-				{
+			foreach (var msgPart in LongTextTransform.Split(message, behaviour,
+				         ts3Client.ServerConstants.MaxSizeTextMessage, limit)){
+				switch (invoker.Visibiliy.Value){
 				case TextMessageTargetMode.Private:
 					await ts3Client.SendMessage(msgPart, invoker.ClientId.Value);
 					break;
@@ -1907,9 +2270,80 @@ namespace TS3AudioBot
 
 		public static void UseComplexityTokens(this ExecutionInformation info, int count)
 		{
-			if (!info.TryGet<CallerInfo>(out var caller) || caller.CommandComplexityCurrent + count > caller.CommandComplexityMax)
+			if (!info.TryGet<CallerInfo>(out var caller) ||
+			    caller.CommandComplexityCurrent + count > caller.CommandComplexityMax)
 				throw new CommandException(strings.error_cmd_complexity_reached, CommandExceptionReason.CommandError);
 			caller.CommandComplexityCurrent += count;
 		}
+	}
+}
+
+struct SongInfo{
+	[JsonPropertyName("id")] public int id { get; set; }
+
+	[JsonPropertyName("full_title")] public string? full_title { get; set; }
+
+	[JsonPropertyName("url")] public string? lyrics_url { get; set; }
+
+	[JsonPropertyName("release_date_for_display")]
+	public string? release { get; set; }
+
+	public void fixEncoding()
+	{
+		//NBSP fix?
+		lyrics_url = lyrics_url?.Replace('\u00a0', ' ');
+		full_title = full_title?.Replace('\u00a0', ' ');
+	}
+}
+
+public class StringMatching
+{
+	private const int MIN_LEN_THRESHOLD = 3;
+	// larger value = better matching
+	public static int Accuracy(string name, string target)
+	{
+		if (name.Length == 0 || target.Length == 0) {
+			return 0;
+		}
+
+		int accuracy = 0;
+		string[] names = name.ToLower().Split(" ");
+		string[] targets = target.ToLower().Split(" ");
+		foreach (string q in names) {
+			foreach (string t in targets){
+				int tmp = matchingLen(q.ToLower(), t.ToLower());
+				if (tmp >= MIN_LEN_THRESHOLD) {
+					accuracy += tmp;
+				}
+			}
+		}
+
+		accuracy = Math.Min(accuracy, name.Length);
+		return Math.Min(accuracy, target.Length);
+	}
+
+	public static int matchingLen(string str1, string str2)
+	{
+		int score = 0;
+		int minLen = Math.Min(str1.Length, str2.Length);
+		for (int i = 0, j = 0; i < minLen && j < minLen; i++, j++) {
+			char chr1 = str1[i];
+			char chr2 = str2[j];
+			if (chr1 == chr2) {
+				score++;
+			} else {
+				if (j + 1 < str2.Length && chr1 == str2[j + 1]) {
+					// cot -> coat (missed letter)
+					score++;
+					j++;
+				} else if (i + 1 < str1.Length && str1[i + 1] == chr2) {
+					// coat -> cot (additional letter)
+					score++;
+					i++;
+				}
+			}
+			//coat -> cost
+		}
+		return score;
 	}
 }
