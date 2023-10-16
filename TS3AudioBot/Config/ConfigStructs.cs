@@ -62,8 +62,8 @@ namespace TS3AudioBot.Config
 	{
 		public ConfigValue<LoaderPriority> ResolverPriority { get; } = new ConfigValue<LoaderPriority>(
 			"prefer_resolver", LoaderPriority.Internal, "Changes how to try to resolve youtube songs\n" +
-			" - youtubedl : uses youtube-dl only\n" +
-			" - internal : uses the internal resolver, then youtube-dl");
+			" - ytdlp : uses yt-dlp only\n" +
+			" - internal : uses the internal resolver, then yt-dlp");
 		public ConfigValue<string> ApiKey { get; } = new ConfigValue<string>("youtube_api_key", "",
 			"Set your own youtube api key to keep using the old youtube factory loader.\n" +
 			"This feature is unsupported and may break at any time");
@@ -71,9 +71,9 @@ namespace TS3AudioBot.Config
 
 	public class ConfTools : ConfigTable
 	{
-		// youtube-dl can be empty by default as we make some thorough lookups.
-		public ConfPath YoutubeDl { get; } = Create<ConfPath>("youtube-dl",
-			"Path to the youtube-dl binary or local git repository.");
+		// yt-dlp can be empty by default as we make some thorough lookups.
+		public ConfPath YoutubeDl { get; } = Create<ConfPath>("yt-dlp",
+			"Path to the yt-dlp binary or local git repository.");
 		public ConfToolsFfmpeg Ffmpeg { get; } = Create<ConfToolsFfmpeg>("ffmpeg",
 			"The path to ffmpeg.");
 		//public ConfPath Ffprobe { get; } = Create<ConfPath>("ffprobe");

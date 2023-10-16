@@ -135,7 +135,7 @@ namespace TS3AudioBot
 			Log.Info("[ Runtime: {0} ServerGC:{1} GC:{2}", SystemData.RuntimeData.FullName, GCSettings.IsServerGC, GCSettings.LatencyMode);
 			Log.Info("[ Opus: {0}", TSLib.Audio.Opus.NativeMethods.Info);
 			// ffmpeg
-			// youtube-dl
+			// yt-dlp
 			Log.Info("[==============================================]");
 		}
 	}
@@ -168,7 +168,7 @@ namespace TS3AudioBot
 		// --setup setup the entire environment (-y to skip for user input?)
 		// > libopus (self-compile/apt-get)
 		// > ffmpeg (apt-get)
-		// > youtube-dl (repo/apt-get)
+		// > yt-dlp (repo/apt-get)
 		// > check NLog.config exists
 		// > Crete new bot (see --new-bot)
 

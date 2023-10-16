@@ -106,7 +106,7 @@ namespace TS3AudioBot.ResourceFactories
 
 		private async Task<PlayResource> YoutubeDlWrappedAsync(string link)
 		{
-			Log.Debug("Falling back to youtube-dl!");
+			Log.Debug("Falling back to yt-dlp!");
 
 			var response = await YoutubeDlHelper.GetSingleVideo(link);
 			var title = response.title ?? $"Soundcloud-{link}";
@@ -116,7 +116,7 @@ namespace TS3AudioBot.ResourceFactories
 			if (string.IsNullOrEmpty(url))
 				throw Error.LocalStr(strings.error_ytdl_empty_response);
 
-			Log.Debug("youtube-dl succeeded!");
+			Log.Debug("yt-dlp succeeded!");
 
 			return new PlayResource(url, new AudioResource(link, title, ResolverFor));
 		}
@@ -161,7 +161,7 @@ namespace TS3AudioBot.ResourceFactories
 			// t500x500: 500px×500px
 			// crop    : 400px×400px
 			// t300x300: 300px×300px
-			// large   : 100px×100px 
+			// large   : 100px×100px
 			await WebWrapper.Request(thumb.artwork_url.Replace("-large", "-t300x300")).ToStream(action);
 		}
 

@@ -811,16 +811,16 @@ with the id {1}?</value>
     <value>No registered factory for "{0}" found.</value>
   </data>
   <data name="error_ytdl_empty_response" xml:space="preserve">
-    <value>No youtube-dl response</value>
+    <value>No yt-dlp response</value>
   </data>
   <data name="error_ytdl_failed_to_run" xml:space="preserve">
     <value>Failed to run youtube-dl.</value>
   </data>
   <data name="error_ytdl_not_found" xml:space="preserve">
-    <value>Youtube-Dl could not be found. The song/video cannot be played due to restrictions.</value>
+    <value>Yt-Dlp could not be found. The song/video cannot be played due to restrictions.</value>
   </data>
   <data name="error_ytdl_song_failed_to_load" xml:space="preserve">
-    <value>youtube-dl failed to load the resource.</value>
+    <value>yt-dlp failed to load the resource.</value>
   </data>
   <data name="info_playmgr_no_next_song" xml:space="preserve">
     <value>No next song could be played.</value>

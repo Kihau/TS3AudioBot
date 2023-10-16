@@ -78,7 +78,7 @@ Run
 
 ### Optional Dependencies
 If the bot can't play some youtube videos it might be due to some embedding restrictions which are blocking this.  
-You can install the [youtube-dl](https://github.com/rg3/youtube-dl/) binary or source folder (and specify the path in the config) to try to bypass this.
+You can install the [yt-dlp](https://github.com/rg3/youtube-dl/) binary or source folder (and specify the path in the config) to try to bypass this.
 
 ### First time setup
 1. Run the bot with `./TS3AudioBot` (Linux) or `TS3AudioBot.exe` (Windows) and follow the setup instructions.
